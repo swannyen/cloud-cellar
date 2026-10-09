@@ -1,0 +1,5 @@
+.env
+.aws-sam/
+__pycache__/
+*.csv
+.venv/

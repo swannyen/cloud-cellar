@@ -1,0 +1,62 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Household stock Telegram bot
+
+Parameters:
+  AllowedChatIds:
+    Type: String
+    Description: Comma-separated Telegram chat IDs the bot responds in
+
+Globals:
+  Function:
+    Runtime: python3.13
+    Architectures: [arm64]
+    MemorySize: 256
+    Timeout: 30
+    CodeUri: src/
+    Environment:
+      Variables:
+        TABLE_NAME: !Ref StockTable
+        PARAM_PREFIX: /bettynuffbot
+        ALLOWED_CHAT_IDS: !Ref AllowedChatIds
+        CLAUDE_MODEL: claude-haiku-5-5
+
+Resources:
+  StockTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PROVISIONED
+      ProvisionedThroughput: {ReadCapacityUnits: 5, WriteCapacityUnits: 5}
+      AttributeDefinitions:
+        - {AttributeName: pk, AttributeType: S}
+        - {AttributeName: sk, AttributeType: S}
+      KeySchema:
+        - {AttributeName: pk, KeyType: HASH}
+        - {AttributeName: sk, KeyType: RANGE}
+      TimeToLiveSpecification: {AttributeName: ttl, Enabled: true}
+
+  WebhookFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: handler.lambda_handler
+      FunctionUrlConfig:
+        AuthType: NONE
+      Policies:   # SAM doesn't allow Policies in Globals, so each function lists them
+        - DynamoDBCrudPolicy:
+            TableName: !Ref StockTable
+        - SSMParameterReadPolicy:
+            ParameterName: bettynuffbot/*
+
+  # DailyFunction, its schedule and DailyLogs are added in Phase 2 (PLAN.md §7.1).
+
+  WebhookLogs:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${WebhookFunction}
+      RetentionInDays: 14
+
+Outputs:
+  WebhookUrl:
+    Value: !GetAtt WebhookFunctionUrl.FunctionUrl
+  WebhookFunctionName:
+    Value: !Ref WebhookFunction
