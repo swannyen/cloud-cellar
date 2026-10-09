@@ -7,14 +7,22 @@ import config
 
 API_BASE = "https://api.telegram.org"
 TIMEOUT_SECONDS = 10
+MAX_MESSAGE_LENGTH = 4096  # Telegram's limit for one message
 
 
 class TelegramError(Exception):
     """A Bot API call failed. The message never includes the bot token."""
 
 
-def send_message(chat_id: int, text: str) -> dict:
-    return _call("sendMessage", {"chat_id": chat_id, "text": text})
+def send_message(chat_id: int, text: str, reply_to: int | None = None) -> dict:
+    """Send plain text, optionally as a reply to one of the chat's messages."""
+    if len(text) > MAX_MESSAGE_LENGTH:
+        text = text[: MAX_MESSAGE_LENGTH - 1] + "…"
+    payload = {"chat_id": chat_id, "text": text}
+    if reply_to is not None:
+        # Still send if the original message has been deleted in the meantime.
+        payload["reply_parameters"] = {"message_id": reply_to, "allow_sending_without_reply": True}
+    return _call("sendMessage", payload)
 
 
 def _call(method: str, payload: dict) -> dict:

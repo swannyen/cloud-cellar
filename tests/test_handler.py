@@ -1,54 +1,40 @@
-"""Phase 0 handler tests: secret check, dedupe, allowed-chat filter, /ping.
+"""Handler tests: secret check, dedupe, allowed-chat filter and routing.
 
-DynamoDB and Telegram are faked; nothing here touches AWS or the network.
+DynamoDB, Telegram and Claude are faked; nothing here touches AWS or the network.
 Run from the repo root: python3 -m unittest discover -s tests -v
 """
 import base64
 import json
 import os
-import sys
 import time
 import unittest
-from pathlib import Path
 from unittest import mock
 
-from botocore.exceptions import ClientError
+from fakes import FakeTable, parsed_event
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-
-import config  # noqa: E402
-import handler  # noqa: E402
+import claude_api
+import config
+import handler
+import parser
+import store
 
 WEBHOOK_SECRET = "test-webhook-secret"
 GROUP_CHAT = -1001234567890
 OTHER_CHAT = 987654321
+MESSAGE_ID = 10
 SECRETS = {"webhook-secret": WEBHOOK_SECRET, "telegram-token": "test-token"}
 
 
-class FakeTable:
-    """In-memory DynamoDB table that honours attribute_not_exists(pk)."""
-
-    def __init__(self, fail_with=None):
-        self.items = {}
-        self.fail_with = fail_with
-
-    def put_item(self, Item, ConditionExpression=None):
-        if self.fail_with:
-            raise ClientError({"Error": {"Code": self.fail_with, "Message": "boom"}}, "PutItem")
-        key = (Item["pk"], Item["sk"])
-        if ConditionExpression == "attribute_not_exists(pk)" and key in self.items:
-            raise ClientError(
-                {"Error": {"Code": "ConditionalCheckFailedException", "Message": "exists"}},
-                "PutItem",
-            )
-        self.items[key] = Item
-
-
-def message_update(update_id=1, chat_id=GROUP_CHAT, text="/ping"):
-    return {
-        "update_id": update_id,
-        "message": {"message_id": 10, "chat": {"id": chat_id, "type": "group"}, "text": text},
+def message_update(update_id=1, chat_id=GROUP_CHAT, text="/ping", **message_fields):
+    message = {
+        "message_id": MESSAGE_ID,
+        "date": 1791555000,
+        "chat": {"id": chat_id, "type": "group"},
+        "from": {"id": 42, "is_bot": False, "first_name": "Mei"},
+        "text": text,
     }
+    message.update(message_fields)
+    return {"update_id": update_id, "message": message}
 
 
 def event(update, secret=WEBHOOK_SECRET, base64_body=False):
@@ -64,33 +50,38 @@ def event(update, secret=WEBHOOK_SECRET, base64_body=False):
 class HandlerTestCase(unittest.TestCase):
     def setUp(self):
         self.table = FakeTable()
-        patches = [
-            mock.patch.dict(os.environ, {"ALLOWED_CHAT_IDS": str(GROUP_CHAT)}),
-            mock.patch.object(config, "secret", side_effect=SECRETS.__getitem__),
-            mock.patch.object(handler, "_dedupe_table", side_effect=lambda: self.table),
-            mock.patch.object(handler.telegram_api, "send_message"),
-            mock.patch.object(handler.logger, "exception"),  # keep expected errors quiet
-        ]
-        started = [p.start() for p in patches]
-        for p in patches:
-            self.addCleanup(p.stop)
-        self.send_message = started[3]
+        patches = {
+            "env": mock.patch.dict(os.environ, {"ALLOWED_CHAT_IDS": str(GROUP_CHAT)}),
+            "secret": mock.patch.object(config, "secret", side_effect=SECRETS.__getitem__),
+            "table": mock.patch.object(store, "_table", self.table),
+            "send": mock.patch.object(handler.telegram_api, "send_message"),
+            "parse": mock.patch.object(parser, "parse", return_value=parser.Parsed([], None)),
+            "log": mock.patch.object(handler.logger, "exception"),  # keep expected errors quiet
+        }
+        started = {name: patch.start() for name, patch in patches.items()}
+        for patch in patches.values():
+            self.addCleanup(patch.stop)
+        self.send_message = started["send"]
+        self.parse = started["parse"]
 
     def call(self, *args, **kwargs):
         return handler.lambda_handler(event(*args, **kwargs), None)
+
+    def replies(self):
+        return [call.args[1] for call in self.send_message.call_args_list]
 
 
 class SecretCheckTest(HandlerTestCase):
     def test_missing_header_is_403_and_does_no_work(self):
         response = self.call(message_update(), secret=None)
         self.assertEqual(response["statusCode"], 403)
-        self.assertEqual(self.table.items, {})
+        self.assertEqual(self.table.rows, {})
         self.send_message.assert_not_called()
 
     def test_wrong_secret_is_403_and_does_no_work(self):
         response = self.call(message_update(), secret="not-the-secret")
         self.assertEqual(response["statusCode"], 403)
-        self.assertEqual(self.table.items, {})
+        self.assertEqual(self.table.rows, {})
         self.send_message.assert_not_called()
 
     def test_empty_secret_is_403(self):
@@ -107,7 +98,7 @@ class SecretCheckTest(HandlerTestCase):
         response = self.call(message_update())
         self.assertEqual(response["statusCode"], 200)
         self.assertEqual(json.loads(response["body"]), {"ok": True})
-        self.send_message.assert_called_once_with(GROUP_CHAT, "pong")
+        self.send_message.assert_called_once_with(GROUP_CHAT, "pong", reply_to=MESSAGE_ID)
 
 
 class DedupeTest(HandlerTestCase):
@@ -115,7 +106,7 @@ class DedupeTest(HandlerTestCase):
         first = self.call(message_update(update_id=7))
         second = self.call(message_update(update_id=7))
         self.assertEqual((first["statusCode"], second["statusCode"]), (200, 200))
-        self.send_message.assert_called_once_with(GROUP_CHAT, "pong")
+        self.assertEqual(self.replies(), ["pong"])
 
     def test_different_updates_each_get_a_reply(self):
         self.call(message_update(update_id=7))
@@ -125,7 +116,7 @@ class DedupeTest(HandlerTestCase):
     def test_marker_has_plan_key_and_two_day_ttl(self):
         before = int(time.time())
         self.call(message_update(update_id=42))
-        marker = self.table.items[("UPD#42", "-")]
+        marker = self.table.rows[("UPD#42", "-")]
         two_days = 2 * 24 * 60 * 60
         self.assertGreaterEqual(marker["ttl"], before + two_days)
         self.assertLessEqual(marker["ttl"], int(time.time()) + two_days)
@@ -139,10 +130,11 @@ class DedupeTest(HandlerTestCase):
 
 
 class AllowedChatTest(HandlerTestCase):
-    def test_other_chat_gets_no_reply(self):
-        response = self.call(message_update(chat_id=OTHER_CHAT))
+    def test_other_chat_gets_no_reply_and_is_not_parsed(self):
+        response = self.call(message_update(chat_id=OTHER_CHAT, text="bought rice"))
         self.assertEqual(response["statusCode"], 200)
         self.send_message.assert_not_called()
+        self.parse.assert_not_called()
 
     def test_callback_query_from_other_chat_gets_no_reply(self):
         update = {
@@ -167,25 +159,28 @@ class AllowedChatTest(HandlerTestCase):
             self.call(message_update(update_id=2, chat_id=-4123456789))
             self.call(message_update(update_id=3, chat_id=GROUP_CHAT))
         self.assertEqual(
-            [c.args for c in self.send_message.call_args_list],
-            [(OTHER_CHAT, "pong"), (-4123456789, "pong")],
+            [call.args[0] for call in self.send_message.call_args_list],
+            [OTHER_CHAT, -4123456789],
         )
 
 
-class RouteTest(HandlerTestCase):
+class CommandRouteTest(HandlerTestCase):
     def test_ping_with_bot_name_suffix(self):
         self.call(message_update(text="/ping@bettynuffbot"))
-        self.send_message.assert_called_once_with(GROUP_CHAT, "pong")
+        self.assertEqual(self.replies(), ["pong"])
 
-    def test_plain_text_and_other_commands_get_no_reply(self):
-        self.call(message_update(update_id=1, text="finished the rice"))
-        self.call(message_update(update_id=2, text="/list"))
-        self.call(message_update(update_id=3, text="ping"))
+    def test_commands_are_not_sent_to_claude(self):
+        self.call(message_update(text="/help"))
+        self.parse.assert_not_called()
+        self.assertIn("/undo", self.replies()[0])
+
+    def test_unknown_command_gets_no_reply(self):
+        self.call(message_update(text="/somethingelse"))
         self.send_message.assert_not_called()
 
     def test_base64_body_is_decoded(self):
         self.call(message_update(), base64_body=True)
-        self.send_message.assert_called_once_with(GROUP_CHAT, "pong")
+        self.assertEqual(self.replies(), ["pong"])
 
     def test_malformed_body_returns_200(self):
         bad = {"headers": {handler.SECRET_HEADER: WEBHOOK_SECRET}, "body": "not json"}
@@ -196,10 +191,61 @@ class RouteTest(HandlerTestCase):
         self.send_message.side_effect = handler.telegram_api.TelegramError("sendMessage: HTTP 500")
         response = self.call(message_update())
         self.assertEqual(response["statusCode"], 200)
-        self.assertEqual(
-            [c.args for c in self.send_message.call_args_list],
-            [(GROUP_CHAT, "pong"), (GROUP_CHAT, handler.ERROR_REPLY)],
+        self.assertEqual(self.replies(), ["pong", handler.ERROR_REPLY])
+
+
+class ChatRouteTest(HandlerTestCase):
+    def test_chatter_with_no_events_gets_no_reply(self):
+        self.call(message_update(text="what time is dinner?"))
+        self.parse.assert_called_once()
+        self.send_message.assert_not_called()
+
+    def test_parser_gets_text_sender_known_items_and_singapore_date(self):
+        store.create_item({"item_id": "rice", "name": "Rice", "base_unit": "g", "aliases": []})
+        # 2026-10-09 16:30 UTC is already 10 October in Singapore.
+        self.call(message_update(text="rice finish already", date=1791563400))
+        text, sender_name, items, today = self.parse.call_args.args
+        self.assertEqual((text, sender_name), ("rice finish already", "Mei"))
+        self.assertEqual([item["item_id"] for item in items], ["rice"])
+        self.assertEqual(today.isoformat(), "2026-10-10")
+
+    def test_events_are_recorded_and_confirmed_in_one_reply_to_the_message(self):
+        self.parse.return_value = parser.Parsed([
+            parsed_event(packs=2, units_per_pack=10, total_price=12.9, store="FairPrice"),
+            parsed_event("finished", item_name="Dishwashing liquid", base_unit="ml"),
+        ], None)
+        self.call(message_update(update_id=5, text="bought tp and finished the dish soap"))
+        self.send_message.assert_called_once_with(
+            GROUP_CHAT,
+            "✓ Toilet paper (new item): bought 2 × 10 rolls for $12.90 at FairPrice ($0.65/roll).\n"
+            "✓ Dishwashing liquid (new item): marked finished.",
+            reply_to=MESSAGE_ID,
         )
+        self.assertEqual(len(self.table.keys("EVT#")), 2)
+
+    def test_clarify_question_is_sent(self):
+        self.parse.return_value = parser.Parsed([], "Which soap did you finish?")
+        self.call(message_update(text="finished the soap"))
+        self.assertEqual(self.replies(), ["Which soap did you finish?"])
+
+    def test_photo_caption_is_parsed(self):
+        update = message_update(text=None, caption="bought rice 5kg $13.50")
+        self.call(update)
+        self.assertEqual(self.parse.call_args.args[0], "bought rice 5kg $13.50")
+
+    def test_stickers_and_other_bots_are_ignored(self):
+        self.call(message_update(update_id=1, text=None, sticker={"file_id": "x"}))
+        bot_message = message_update(update_id=2, text="bought rice")
+        bot_message["message"]["from"]["is_bot"] = True
+        self.call(bot_message)
+        self.parse.assert_not_called()
+        self.send_message.assert_not_called()
+
+    def test_claude_failure_apologises_in_reply_to_the_message(self):
+        self.parse.side_effect = claude_api.ClaudeError("HTTP 529 overloaded_error")
+        response = self.call(message_update(text="bought rice"))
+        self.assertEqual(response["statusCode"], 200)
+        self.send_message.assert_called_once_with(GROUP_CHAT, handler.ERROR_REPLY, reply_to=MESSAGE_ID)
 
 
 if __name__ == "__main__":

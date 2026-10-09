@@ -13,6 +13,10 @@ def table_name() -> str:
     return os.environ["TABLE_NAME"]
 
 
+def claude_model() -> str:
+    return os.environ.get("CLAUDE_MODEL", "claude-haiku-5-5")
+
+
 def allowed_chat_ids() -> frozenset:
     raw = os.environ.get("ALLOWED_CHAT_IDS", "")
     return frozenset(int(part) for part in raw.split(",") if part.strip())
