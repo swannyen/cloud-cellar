@@ -1,4 +1,7 @@
-"""Slash commands (PLAN.md §8.4). Phase 1: /items, /undo, /help, plus /ping."""
+"""
+Slash commands (PLAN.md §8.4). 
+Phase 1: /items, /undo, /help, /ping.
+"""
 import apply
 import replies
 import store
