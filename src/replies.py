@@ -117,6 +117,12 @@ def wrong_unit(item) -> str:
     return f"{item['name']} {verb} counted in {_UNIT_NAMES[unit]}. Try 2{word} or 2x{size}{word}."
 
 
+def not_a_product(phrase) -> str:
+    """For a "+", "-" or "?" line whose item the AI didn't take for a household product."""
+    return (f'I don\'t know what "{phrase}" is, so it isn\'t recorded. Use the product\'s usual name, '
+            f"or teach me this one: /alias {phrase.lower()} = <item>")
+
+
 def lookup_failed(phrase) -> str:
     return f'Couldn\'t look up "{phrase}" just now, so it isn\'t recorded. Please send that line again.'
 

@@ -39,9 +39,9 @@ def apply_entries(entries, *, items, sender, update_id, at, brands=()) -> tuple:
 
     items is the tracked-item list; items created here are added to it. brands
     are the names taught with /brand. at is the event time as an ISO UTC
-    string. Nothing is recorded for an entry whose
-    phrase isn't a household product (no reply), or whose quantity can't be
-    worked out without guessing (the reply asks).
+    string. Nothing is recorded for an entry whose phrase isn't a household
+    product (it gets a reply only if the line began with "+", "-" or "?"), or
+    whose quantity can't be worked out without guessing (the reply asks).
     """
     lines, buttons, counts = [], [], Counter()
     for index, entry in enumerate(entries):
@@ -58,6 +58,9 @@ def apply_entries(entries, *, items, sender, update_id, at, brands=()) -> tuple:
             counts["ai_match_calls"] += 1
         if item is None:
             counts["lines_rejected"] += 1
+            # "have you eaten" is chat and gets no reply, but "+ ..." was meant as an entry: say it wasn't taken.
+            if structured.starts_with_symbol(entry["raw"]):
+                lines.append(replies.not_a_product(entry["phrase"]))
             continue
         guessed = entry["phrase"] if how in GUESSES else None
         amount = _amount(entry, item)

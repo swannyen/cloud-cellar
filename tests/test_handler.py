@@ -288,6 +288,17 @@ class FormatRouteTest(HandlerTestCase):
         self.call(message_update(text="+ 2 sticks facial masks $1.96 from qoo10"))
         self.assertEqual(self.replies(), ["✓ Facial masks: bought 2 pieces for $1.96 at Qoo10 ($0.98/piece)."])
 
+    def test_symbol_line_the_ai_does_not_take_for_a_product_is_answered_not_dropped(self):
+        self.match_item.side_effect = None
+        self.match_item.return_value = ai.ItemMatch(None, "", "piece")
+        self.call(message_update(update_id=1, text="+ mama lemon 2x500ml $5\n- dish soap"))
+        self.assertEqual(self.replies(), [replies.not_a_product("mama lemon") + "\n✓ Dishwashing liquid: marked finished."])
+        self.assertEqual(self.stats(), {"ai_match_calls": 1, "lines_rejected": 1, "lines_structured": 1})
+        # The same answer for a word keyword is taken as chat and gets nothing.
+        self.send_message.reset_mock()
+        self.call(message_update(update_id=2, text="have you eaten 2"))
+        self.send_message.assert_not_called()
+
     def test_ai_failure_says_which_line_was_not_recorded(self):
         self.match_item.side_effect = claude_api.ClaudeError("HTTP 529 overloaded_error")
         with mock.patch.object(handler.apply.logger, "exception"):

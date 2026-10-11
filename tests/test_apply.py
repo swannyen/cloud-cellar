@@ -387,6 +387,25 @@ class ItemResolutionTest(ApplyTestCase):
         self.assertEqual(counts, {"ai_match_calls": 1, "lines_rejected": 1})
         self.assertEqual(self.table.keys("EVT#") + self.table.keys("USER#"), [])
 
+    def test_symbol_line_always_gets_an_answer_even_when_nothing_is_recorded(self):
+        self.add_toilet_paper()
+        self.ai_says(None, "")
+        answer = ('I don\'t know what "mama lemon" is, so it isn\'t recorded. '
+                  "Use the product's usual name, or teach me this one: /alias mama lemon = <item>")
+        for update_id, text in enumerate(["+ mama lemon 2x500ml $5", "- mama lemon", "? mama lemon 500ml $2.50", "+mama lemon"]):
+            with self.subTest(text=text):
+                lines, counts, buttons = self.send(text, update_id=update_id)
+                self.assertEqual(lines, [answer])
+                self.assertEqual((counts, buttons), ({"ai_match_calls": 1, "lines_rejected": 1}, []))
+        self.assertEqual(self.table.keys("EVT#") + self.table.keys("USER#"), [])
+        self.assertEqual(self.table.keys("ITEM"), [("ITEM", "toilet-paper")])
+
+    def test_word_keyword_chat_still_gets_no_answer(self):
+        self.ai_says(None, "")
+        for text in ("have you eaten 2", "last night was fun", "done with dinner", "add oil!"):
+            with self.subTest(text=text):
+                self.assertEqual(self.lines(text), [])
+
     def test_ai_failure_skips_that_line_and_keeps_the_rest(self):
         self.add_toilet_paper()
         self.match_item.side_effect = claude_api.ClaudeError("HTTP 529 overloaded_error")

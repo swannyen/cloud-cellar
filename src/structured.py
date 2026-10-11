@@ -129,6 +129,11 @@ def has_keyword(line) -> bool:
     return _keyword(" ".join(line.split()))[0] is not None
 
 
+def starts_with_symbol(line) -> bool:
+    """Whether a line opens with "+", "-" or "?": someone using the format on purpose, not chatting."""
+    return line.strip()[:1] in SYMBOLS
+
+
 def has_words(line) -> bool:
     """Whether a line has words after its keyword, not only numbers and prices ("+ rice 2 3", not "+ 2 3")."""
     return bool(_LETTER.search(_keyword(" ".join(line.split()))[1]))

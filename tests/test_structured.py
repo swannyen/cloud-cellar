@@ -59,6 +59,14 @@ class KeywordTest(unittest.TestCase):
         self.assertEqual(read("add toilet paper 2x10 $12.90 @fairprice"),
                          entry("bought", "toilet paper", packs_of(2, 10), 12.9, "FairPrice"))
 
+    def test_lines_that_open_with_a_symbol(self):
+        for line in ("+ rice", "-dish soap", "  ? rice 5kg $5", "+"):
+            with self.subTest(line=line):
+                self.assertTrue(structured.starts_with_symbol(line))
+        for line in ("bought rice", "add rice", "have you eaten", "rice + beans", ""):
+            with self.subTest(line=line):
+                self.assertFalse(structured.starts_with_symbol(line))
+
     def test_keywords_are_case_insensitive(self):
         self.assertEqual(read("BOUGHT rice"), entry("bought", "rice"))
         self.assertEqual(read("Low Shampoo"), entry("opened_last", "Shampoo"))
