@@ -196,6 +196,12 @@ class GroundingTest(unittest.TestCase):
                                     "is $5 for 10 pcs of masks ok?")
         self.assertEqual((kept["total_price"], kept["quantity"]["amount"]), (5, 10))
 
+    def test_used_without_a_grounded_quantity_is_dropped(self):
+        self.assertEqual(ai.ground_free_text([event(action="used")], "used some masks"), [])
+        self.assertEqual(ai.ground_free_text([event(action="used", quantity_text="5 pcs")], "used a few masks"), [])
+        kept, = ai.ground_free_text([event(action="used", quantity_text="5 pcs")], "used 5 pcs of masks")
+        self.assertEqual((kept["action"], kept["quantity"]["amount"]), ("used", 5))
+
     def test_several_events_are_each_checked(self):
         entries = ai.ground_free_text(
             [event(store="Giant", total_price=3), event(item_id=None, item_name="Rice", store="Shopee", total_price=99)],

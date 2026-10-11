@@ -14,7 +14,7 @@ import claude_api
 import matcher
 import structured
 
-ACTIONS = ("bought", "stock_count", "opened_last", "finished", "still_have", "price_check")
+ACTIONS = ("bought", "used", "stock_count", "opened_last", "finished", "still_have", "price_check")
 BASE_UNITS = ("piece", "roll", "sheet", "g", "ml")
 MAX_NAME_LENGTH = 60
 ITEM_MATCH_MAX_TOKENS = 100
@@ -99,7 +99,7 @@ LOG_WORDS = (
 _LOG_SIGNS = re.compile(r"[\d$]|\b(?:" + "|".join(LOG_WORDS) + r")\b", re.IGNORECASE)
 
 # Bump when FREE_TEXT_PROMPT changes, so logged results can be tied to a prompt.
-FREE_TEXT_PROMPT_VERSION = 6
+FREE_TEXT_PROMPT_VERSION = 7
 
 # Every field is required (structured outputs limit optional fields); unknowns are null.
 FREE_TEXT_SCHEMA = {
@@ -142,6 +142,7 @@ The program checks the store, the price and the quantity you return against the 
 Return an event only when the message reports something that has already happened to a supply, or asks whether a specific price is good.
 
 - bought: someone bought it, or an order of it arrived.
+- used: some of it was used and an amount is given, but it has not run out ("used 2 rolls", "took 3 packets to the office"). Without an amount this is not an event.
 - finished: it has run out ("finished", "used up", "ran out", "no more", "finish").
 - opened_last: the last pack is now in use, or it is nearly gone ("opened the last one", "last bottle", "running low", "almost out").
 - stock_count: a count of what is at home right now ("we have 3 bags", "4 packs left").
@@ -158,7 +159,7 @@ Return one event per item per thing that happened. One message can produce sever
 - item_name: for a known item, the words the sender used for it ("loo roll"); if they named only a brand, repeat the known item's name. For a new item, a generic product name in sentence case that keeps the describing word ("Hand masks", "Dishwashing liquid", "Soy sauce"), never a brand.
 - brand: the brand if one is written in the message ("Mama Lemon", "Darlie"), otherwise null.
 - base_unit: "g" for things sold by weight, "ml" for liquids and anything else sold by volume, "roll", "sheet", or "piece" for things sold by count. Go by how the product is sold, not by the container the message names: a jar of jam is still "g" and a bottle of floor cleaner is still "ml". For a known item, use its base unit.
-- quantity_text: the quantity words copied exactly as written, as one continuous piece of the message: "5kg", "35 sticks", "3 x 2L", "pack of 10 rolls", "6 cans". When the number of packs and the size of a pack are written apart, copy the whole stretch from the first to the last, with the words in between ("2 packs toilet paper 10 rolls each"). Don't convert units, multiply or decide what a number counts. If the message gives no quantity for this item, null. For finished, opened_last and still_have, null.
+- quantity_text: the quantity words copied exactly as written, as one continuous piece of the message: "5kg", "35 sticks", "3 x 2L", "pack of 10 rolls", "6 cans". When the number of packs and the size of a pack are written apart, copy the whole stretch from the first to the last, with the words in between ("2 packs toilet paper 10 rolls each"). Don't convert units, multiply or decide what a number counts. If the message gives no quantity for this item, null. For finished, opened_last and still_have, null; "used" always has one.
 - total_price_sgd: the total price written in the message for this event, as a number: "$12.90" -> 12.9, "2 for $9.90" -> 9.9. When a promotional price was paid, use it, not the usual price. Only a total that is written counts. If the message gives just a price per pack ("$3.20 each" for two), or one total covering several different items, null.
 - store: the shop copied as it is written in the message ("ntuc", "Sheng Siong", "taobao"), otherwise null. Never replace it with another shop or another name for it. A shop named once for a whole shopping trip applies to every item in the message.
 
@@ -227,6 +228,11 @@ Known items (id | name | base unit | aliases):
 rice | Rice | g |
 Message: counted the storeroom: 6 cans of tuna
 Output: {"events":[{"action":"stock_count","item_id":null,"item_name":"Canned tuna","base_unit":"piece","quantity_text":"6 cans","total_price_sgd":null,"store":null,"brand":null}],"clarify":null}
+
+Known items (id | name | base unit | aliases):
+kitchen-towel | Kitchen towel | roll | kitchen roll
+Message: used 2 rolls of kitchen towel cleaning up the spill
+Output: {"events":[{"action":"used","item_id":"kitchen-towel","item_name":"kitchen towel","base_unit":"roll","quantity_text":"2 rolls","total_price_sgd":null,"store":null,"brand":null}],"clarify":null}
 
 Known items (id | name | base unit | aliases):
 shampoo | Shampoo | ml |
@@ -359,6 +365,8 @@ def ground_free_text(events, text, stores=(), units=None) -> list:
             brand = None
         if event["action"] == "price_check" and price is None:
             continue  # a price check without a price has nothing to add to the price book
+        if event["action"] == "used" and quantity is None:
+            continue  # nothing to take off the stock
         entries.append({
             "action": event["action"],
             "item_id": event["item_id"],

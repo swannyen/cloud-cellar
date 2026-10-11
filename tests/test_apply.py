@@ -207,6 +207,63 @@ class AcceptanceTest(ApplyTestCase):
         self.assertEqual(self.events("face-masks"), [])
 
 
+class UsedTest(ApplyTestCase):
+    """A quantity on a "-" line is what was used; the rest stays in stock."""
+
+    def add_pocket_tissues(self):
+        self.add_item("pocket-tissues", "Pocket tissues", "piece")
+        self.send("+ pocket tissues 90x6 pieces $3.74 @taobao\n/add pocket tissues 90x6 pieces $3.76 @taobao", update_id=1)
+
+    def test_using_90_of_180_packets_leaves_90(self):
+        self.add_pocket_tissues()
+        lines, counts, buttons = self.send("/used pocket tissues 90 packets", update_id=2)
+        self.assertEqual(lines, ["✓ Pocket tissues: used 90 packs × 6 pieces (540 pieces), 540 pieces (90 packs) left."])
+        self.assertEqual((counts, buttons), ({"lines_structured": 1}, []))
+        item = store.get_item("pocket-tissues")
+        self.assertEqual((item["status"], item["stock_est"]), ("ok", 540))
+        event = self.events("pocket-tissues")[-1]
+        self.assertEqual((event["action"], event["qty"], event["packs"]), ("used", 540, 90))
+        self.assertNotIn("unit_price", event)
+        self.match_item.assert_not_called()
+
+    def test_single_pieces_and_the_minus_sign_work_the_same_way(self):
+        self.add_pocket_tissues()
+        self.assertEqual(self.lines("- pocket tissues 6pcs", update_id=2),
+                         ["✓ Pocket tissues: used 6 pieces, 1074 pieces (179 packs) left."])
+
+    def test_without_a_quantity_it_has_run_out(self):
+        self.add_pocket_tissues()
+        self.assertEqual(self.lines("/used pocket tissues", update_id=2), ["✓ Pocket tissues: marked finished."])
+        self.assertEqual(store.get_item("pocket-tissues")["stock_est"], 0)
+
+    def test_using_everything_marks_it_out(self):
+        self.add_pocket_tissues()
+        self.assertEqual(self.lines("- pocket tissues 180", update_id=2),
+                         ["✓ Pocket tissues: used 180 packs × 6 pieces (1080 pieces), none left."])
+        self.assertEqual(store.get_item("pocket-tissues")["status"], "out")
+
+    def test_a_pack_count_without_a_pack_size_asks_instead_of_guessing(self):
+        self.add_face_masks()
+        self.send("+ face masks 50pcs", update_id=1)
+        lines, counts, _ = self.send("- face masks 2", update_id=2)
+        self.assertEqual(lines, ["How many in each pack of Face masks? Resend like: - face masks 2x5pcs — "
+                                 "or write 2pcs if you mean single pieces."])
+        self.assertEqual(counts, {"lines_rejected": 1})
+        self.assertEqual(store.get_item("face-masks")["stock_est"], 50)
+
+    def test_a_unit_that_does_not_fit_is_rejected(self):
+        self.add_pocket_tissues()
+        self.assertEqual(self.lines("- pocket tissues 500ml", update_id=2),
+                         ["Pocket tissues are counted in pieces. Try 2pcs or 2x5pcs."])
+
+    def test_free_text_use_goes_the_same_way(self):
+        self.add_pocket_tissues()
+        lines, _, _ = self.said("took 3 packets of pocket tissues to the office", dict(
+            action="used", item_id="pocket-tissues", item_name="pocket tissues", base_unit="piece",
+            quantity_text="3 packets"), update_id=2)
+        self.assertEqual(lines, ["✓ Pocket tissues: used 3 packs × 6 pieces (18 pieces), 1062 pieces (177 packs) left."])
+
+
 class RecordTest(ApplyTestCase):
     def test_event_record_has_the_plan_attributes(self):
         self.add_toilet_paper()

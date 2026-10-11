@@ -6,7 +6,8 @@ import model
 HELP = """\
 One entry per line, starting with what happened:
 + toilet paper 2x10 $12.90 @fairprice — bought (or: bought, buy, add, /add, /bought)
-- dish soap — finished (or: done, finished, out, /used)
+- dish soap — finished: none left (or: done, finished, out, /used)
+- toilet paper 2 — used 2 packs, the rest is still there
 low shampoo — on the last one (or: last)
 have rice 2x5kg — what's at home right now
 ? detergent 3kg $8.95 @shengsiong — price check (or: price)
@@ -50,7 +51,7 @@ _UNIT_NAMES = {"piece": "pieces", "roll": "rolls", "sheet": "sheets", "g": "gram
 _COUNT_UNITS = {"piece": "pieces", "roll": "rolls", "sheet": "sheets"}
 # For the examples in questions: (a pack size, the unit word to type).
 _EXAMPLES = {"piece": (5, "pcs"), "roll": (10, "rolls"), "sheet": (100, "sheets"), "g": (5, "kg"), "ml": (1, "L")}
-_KEYWORDS = {"bought": "+", "stock_count": "have", "price_check": "?"}
+_KEYWORDS = {"bought": "+", "used": "-", "stock_count": "have", "price_check": "?"}
 
 
 def event_line(item, event, created=False, read_from=None, missed=()) -> str:
@@ -60,6 +61,9 @@ def event_line(item, event, created=False, read_from=None, missed=()) -> str:
     the AI's match). missed names what the AI gave that wasn't in the message.
     """
     text = describe(item, event, name_suffix=" (new item)" if created else "")
+    if event["action"] == "used" and item.get("stock_est") is not None:
+        # item is as it stands after the entry, so this is what the family should still find at home.
+        text += f", {_stock(item)} left" if item["stock_est"] else ", none left"
     tick = "" if event["action"] == "price_check" else "✓ "
     notes = f' (Read "{read_from}" as {item["name"]}.)' if read_from else ""
     notes += f" (Didn't catch the {' or '.join(missed)}.)" if missed else ""
@@ -89,6 +93,8 @@ def summary(item, event) -> str:
         return f"counted {amount} in stock" if amount else "noted as in stock"
     if action == "opened_last":
         return "marked as running low"  # also used for "running low", not only "opened the last one"
+    if action == "used":
+        return f"used {amount}" if amount else "used some"
     if action == "finished":
         return "marked finished"
     return "noted, still have plenty"  # still_have

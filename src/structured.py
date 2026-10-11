@@ -6,7 +6,7 @@ at: a quantity says what it counts, or the caller asks (resolve_quantity).
 """
 import re
 
-MAX_PACKS = 100
+MAX_PACKS = 1000  # more than this in one entry is taken for a typo (a phone number, a price without its $)
 MAX_STORE_LENGTH = 40
 
 # Returned for a line that starts with a keyword but can't be read.
@@ -25,8 +25,8 @@ WORDS = {
 # The same entries written as bot commands: "/add rice 5kg" is "+ rice 5kg", "/used rice" is "- rice".
 COMMANDS = {"/add": "bought", "/bought": "bought", "/used": "finished"}
 
-# These actions take no quantity or price: everything after the keyword is the item.
-NO_QUANTITY = ("finished", "opened_last")
+# This action takes no quantity or price: everything after the keyword is the item.
+NO_QUANTITY = ("opened_last",)
 
 PACK = "pack"  # what a pack word counts, as opposed to a base unit
 
@@ -115,6 +115,11 @@ def parse_line(line, stores=(), units=None):
     quantity = quantities[0] if quantities else None
     if not _READABLE.search(phrase):
         return UNREADABLE
+    if action == "finished":
+        # "- rice" has run out. "- rice 2" is two packs used, with the rest still there.
+        if quantity is None:
+            return _entry("finished", phrase, raw, explicit=explicit)
+        return _entry("used", phrase, raw, quantity, explicit=explicit)
     # A price check needs both, or there is no unit price to compare.
     if action == "price_check" and (price is None or quantity is None):
         return UNREADABLE

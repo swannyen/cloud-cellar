@@ -198,10 +198,42 @@ class QuantityTest(unittest.TestCase):
         self.assertEqual(read("+ rice $12"), entry("bought", "rice", None, 12))
         self.assertEqual(read("have rice"), entry("stock_count", "rice"))
 
-    def test_status_lines_take_everything_as_the_item(self):
-        self.assertEqual(read("- 100 plus"), entry("finished", "100 plus"))
+    def test_minus_without_a_quantity_means_it_has_run_out(self):
+        for line in ("- dish soap", "/used dish soap", "done dish soap", "finished dish soap", "out dish soap"):
+            with self.subTest(line=line):
+                self.assertEqual(read(line), entry("finished", "dish soap"))
         self.assertEqual(read("- 7up"), entry("finished", "7up"))
+        self.assertEqual(read("- 100plus"), entry("finished", "100plus"))
+        # A price or a store on such a line means nothing, and is left out.
+        self.assertEqual(read("- dish soap $3 @ntuc"), entry("finished", "dish soap"))
+
+    def test_minus_with_a_quantity_means_that_much_was_used(self):
+        cases = {
+            "- pocket tissues 90": packs(90),
+            "/used pocket tissues 90 packets": packs(90),
+            "- pocket tissues 90pcs": amount(90, "piece"),
+            "- rice 2kg": amount(2000, "g"),
+            "- toilet paper 2x10": packs_of(2, 10),
+            "finished toilet paper 3 rolls": amount(3, "roll"),
+            "- 2 pocket tissues": packs(2),
+        }
+        for line, quantity in cases.items():
+            with self.subTest(line=line):
+                result = read(line)
+                self.assertEqual((result["action"], result["quantity"]), ("used", quantity))
+                self.assertNotIn(result["phrase"], ("", "90"))
+        self.assertEqual(read("/used pocket tissues 90 packets"), entry("used", "pocket tissues", packs(90)))
+        self.assertIs(read("- rice 2 3"), UNREADABLE)
+
+    def test_large_pack_counts_are_fine(self):
+        # A family that buys pocket tissues 90 packets at a time has 180 of them.
+        self.assertEqual(read("have pocket tissues 180")["quantity"], packs(180))
+        self.assertEqual(read("+ pocket tissues 180x6pcs")["quantity"], packs_of(180, 6, "piece"))
+        self.assertEqual(read("- pocket tissues 1000")["quantity"], packs(1000))
+
+    def test_low_lines_take_everything_as_the_item(self):
         self.assertEqual(read("low rice @ntuc"), entry("opened_last", "rice"))
+        self.assertEqual(read("low 100 plus"), entry("opened_last", "100 plus"))
 
     def test_the_line_is_kept_as_raw(self):
         self.assertEqual(structured.parse_line("  +  rice   5kg ")["raw"], "+ rice 5kg")
@@ -301,7 +333,7 @@ class UnreadableTest(unittest.TestCase):
             "+ rice 0": "zero",
             "+ rice 0kg": "zero",
             "+ rice $0": "zero",
-            "+ rice 500": "more packs than is believable",
+            "+ rice 5000": "more packs than is believable",
             "+ rice 2x10pkt": "a pack size has to be in base units",
             "bought 2 packs toilet paper 10 rolls each $12.90 fairprice": "free text, not the format",
         }

@@ -30,6 +30,11 @@ def replay(events, pack_size=None) -> dict:
             if pack_size:
                 stock = pack_size
             status = "low"
+        elif action == "used":
+            # Only what is known to be there can be counted down.
+            if qty is not None and stock is not None:
+                stock = max(0, stock - qty)
+                status = "out" if stock == 0 else "ok" if stock > (pack_size or 1) else "low"
         elif action == "finished":
             stock = 0
             status = "out"

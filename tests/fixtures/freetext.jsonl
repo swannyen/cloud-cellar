@@ -67,3 +67,6 @@
 {"id": "ground-foot-masks-not-face-masks", "text": "ordered foot mask 1 box 10pcs, $1.45, from tb", "expect": [{"action": "bought", "new": ["foot"], "base_unit": "piece", "qty": 10, "total_price": 1.45, "store": "Taobao"}]}
 {"id": "brand-then-facial-masks", "text": "bought 2 pcs Kans facial masks for 1.96 from Taobao", "expect": [{"action": "bought", "new": ["facial"], "base_unit": "piece", "qty": 2, "total_price": 1.96, "store": "Taobao", "brand": {"any": ["Kans", null]}}]}
 {"id": "face-masks-are-still-face-masks", "text": "bought face masks 50 pcs $3.99 from taobao", "expect": [{"action": "bought", "item_id": "face-masks", "qty": 50, "total_price": 3.99, "store": "Taobao"}]}
+{"id": "used-some-toilet-paper", "text": "used 3 rolls of toilet paper for the guests", "expect": [{"action": "used", "item_id": "toilet-paper", "qty": 3}]}
+{"id": "used-some-rice", "text": "took 2kg of rice for the party", "expect": [{"action": "used", "item_id": "rice", "qty": 2000}]}
+{"id": "used-up-is-finished", "text": "used up all the shampoo this morning", "expect": [{"action": "finished", "item_id": "shampoo"}]}

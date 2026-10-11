@@ -114,6 +114,15 @@ class UndoTest(CommandTestCase):
         commands.handle("/undo", MEI, NOW)
         self.assertEqual(store.get_item("toilet-paper")["pack_size"], 10)
 
+    def test_undoing_a_used_entry_puts_the_amount_back(self):
+        self.record("+ toilet paper 3x10", update_id=1, at="2026-10-09T08:00:00Z")
+        self.assertEqual(self.record("- toilet paper 2", update_id=2),
+                         ["✓ Toilet paper: used 2 packs × 10 rolls (20 rolls), 10 rolls (1 pack) left."])
+        self.assertEqual(store.get_item("toilet-paper")["status"], "low")
+        self.assertEqual(commands.handle("/undo", MEI, NOW), "Undid: Toilet paper, used 2 packs × 10 rolls (20 rolls).")
+        item = store.get_item("toilet-paper")
+        self.assertEqual((item["status"], item["stock_est"]), ("ok", 30))
+
     def test_undo_only_touches_the_callers_own_entries(self):
         self.record("+ toilet paper 2x10", sender=MEI, update_id=1)
         self.record("- toilet paper", sender=JUN, update_id=2, at="2026-10-09T10:00:30Z")

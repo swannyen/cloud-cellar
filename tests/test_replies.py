@@ -64,6 +64,17 @@ class EventLineTest(unittest.TestCase):
         self.assertEqual(replies.event_line(MASKS, ev(qty=10), read_from="masks", missed=("store", "price")),
                          '✓ Face masks: bought 10 pieces. (Read "masks" as Face masks.) (Didn\'t catch the store or price.)')
 
+    def test_used_says_how_much_went_and_how_much_is_left(self):
+        used = ev("used", qty=540, packs=90)
+        pocket = {"item_id": "pocket-tissues", "name": "Pocket tissues", "base_unit": "piece", "pack_size": 6}
+        self.assertEqual(replies.event_line(dict(pocket, stock_est=540), used),
+                         "✓ Pocket tissues: used 90 packs × 6 pieces (540 pieces), 540 pieces (90 packs) left.")
+        self.assertEqual(replies.event_line(dict(pocket, stock_est=0), used),
+                         "✓ Pocket tissues: used 90 packs × 6 pieces (540 pieces), none left.")
+        # No stock figure to count down from: just what was used.
+        self.assertEqual(replies.event_line(pocket, ev("used", qty=3)), "✓ Pocket tissues: used 3 pieces.")
+        self.assertEqual(replies.summary(pocket, used), "used 90 packs × 6 pieces (540 pieces)")
+
     def test_status_events(self):
         self.assertEqual(replies.event_line(SOAP, ev("finished")), "✓ Dishwashing liquid: marked finished.")
         self.assertEqual(replies.event_line(TP, ev("opened_last")), "✓ Toilet paper: marked as running low.")
@@ -100,6 +111,8 @@ class QuestionTest(unittest.TestCase):
         )
         self.assertIn("Resend like: have toilet paper 3x10rolls — or write 3rolls if you mean single rolls.",
                       replies.ask_pack_size(TP, self.entry("have Toilet Paper 3")))
+        self.assertIn("Resend like: - toilet paper 2x10rolls — or write 2rolls if you mean single rolls.",
+                      replies.ask_pack_size(TP, self.entry("- toilet paper 2")))
 
     def test_asking_for_the_pack_size_of_something_weighed_or_poured(self):
         self.assertEqual(
@@ -149,7 +162,7 @@ class FormattingTest(unittest.TestCase):
 
 class FixedTextTest(unittest.TestCase):
     def test_help_has_an_example_for_every_action_and_lists_the_commands(self):
-        for example in ("+ toilet paper 2x10 $12.90 @fairprice", "- dish soap", "low shampoo", "have rice 2x5kg",
+        for example in ("+ toilet paper 2x10 $12.90 @fairprice", "- dish soap", "- toilet paper 2", "low shampoo", "have rice 2x5kg",
                         "? detergent 3kg $8.95 @shengsiong"):
             self.assertIn(example, replies.HELP)
         for command in ("/listitems", "/items", "/undo", "/alias", "/set", "/unit", "/brand", "/listbrands", "/stats", "/add", "/bought", "/used"):
@@ -160,7 +173,7 @@ class FixedTextTest(unittest.TestCase):
     def test_every_example_in_the_help_and_the_hint_really_parses(self):
         examples = [line.split(" — ")[0] for line in replies.HELP.split("\n\n")[0].splitlines() if " — " in line]
         examples.append(replies.FORMAT_HINT.split("Try: ")[1].split(" — ")[0])
-        self.assertEqual(len(examples), 6)
+        self.assertEqual(len(examples), 7)
         for example in examples:
             with self.subTest(example=example):
                 self.assertIsInstance(structured.parse_line(example), dict)

@@ -264,7 +264,7 @@ def _create_item(name, base_unit, items, at, phrase=None):
 
 def _amount(entry, item):
     """The entry's total for this item (see structured.resolve_quantity), or why it can't be known."""
-    if entry["action"] not in ("bought", "stock_count", "price_check"):
+    if entry["action"] not in ("bought", "used", "stock_count", "price_check"):
         return NO_AMOUNT
     return structured.resolve_quantity(entry["quantity"], item["base_unit"], item.get("pack_size"))
 

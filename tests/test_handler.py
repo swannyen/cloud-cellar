@@ -344,6 +344,12 @@ class EntryCommandTest(HandlerTestCase):
         self.assertEqual(self.stats(), {"lines_structured": 3})
         self.match_item.assert_not_called()
 
+    def test_used_with_a_quantity_takes_that_much_off_the_stock(self):
+        self.call(message_update(update_id=1, text="/add toilet paper 3x10"))
+        self.call(message_update(update_id=2, text="/used toilet paper 1"))
+        self.assertEqual(self.replies()[1], "✓ Toilet paper: used 1 pack of 10 rolls, 20 rolls (2 packs) left.")
+        self.assertEqual(store.get_item("toilet-paper")["stock_est"], 20)
+
     def test_used_marks_finished_like_the_minus_sign(self):
         self.call(message_update(text="/used dish soap"))
         self.assertEqual(self.replies(), ["✓ Dishwashing liquid: marked finished."])

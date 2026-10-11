@@ -35,6 +35,29 @@ class ReplayTest(unittest.TestCase):
         state = model.replay([ev("finished"), ev("bought", 10)])
         self.assertEqual((state["status"], state["stock_est"]), ("ok", 10))
 
+    def test_used_takes_the_amount_off_the_stock(self):
+        # 180 packets of 6, then 90 packets used.
+        state = model.replay([ev("bought", 540), ev("bought", 540), ev("used", 540)], pack_size=6)
+        self.assertEqual((state["status"], state["stock_est"]), ("ok", 540))
+
+    def test_used_down_to_a_pack_or_less_is_low_and_down_to_nothing_is_out(self):
+        self.assertEqual(model.replay([ev("bought", 30), ev("used", 20)], pack_size=10)["status"], "low")
+        self.assertEqual(model.replay([ev("bought", 30), ev("used", 25)], pack_size=10)["stock_est"], 5)
+        state = model.replay([ev("bought", 30), ev("used", 30)], pack_size=10)
+        self.assertEqual((state["status"], state["stock_est"]), ("out", 0))
+
+    def test_using_more_than_there_is_stops_at_nothing_left(self):
+        state = model.replay([ev("bought", 30), ev("used", 50)])
+        self.assertEqual((state["status"], state["stock_est"]), ("out", 0))
+
+    def test_used_with_no_stock_figure_changes_nothing(self):
+        self.assertEqual(model.replay([ev("used", 5)]), {"status": None, "stock_est": None, "last_event_at": "2026-10-09T10:00:00Z"})
+        state = model.replay([ev("bought", 30), ev("used")])
+        self.assertEqual((state["status"], state["stock_est"]), ("ok", 30))
+
+    def test_buying_after_using_adds_to_what_was_left(self):
+        self.assertEqual(model.replay([ev("bought", 30), ev("used", 20), ev("bought", 30)])["stock_est"], 40)
+
     def test_opened_last_leaves_one_pack_marked_low(self):
         state = model.replay([ev("bought", 40), ev("opened_last")], pack_size=10)
         self.assertEqual((state["status"], state["stock_est"]), ("low", 10))
