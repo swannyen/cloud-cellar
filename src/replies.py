@@ -31,6 +31,7 @@ The store goes last: @giant, or from/at a store I already know.
 
 See what's there:
 /listitems — what's in the cellar, and how much
+/list toilet paper — one item: how much is left, and of which brands
 /items — the same items with their IDs and pack sizes
 /listbrands — brands on what we've bought
 /stats — how many lines needed AI this month
@@ -41,6 +42,8 @@ Fix or teach:
 /brand kans — teach me a brand
 /set toilet paper pack 10 — set a pack size
 /unit sticks = pcs — teach me a unit word
+/rename dish soap = dishwashing liquid — change an item's name
+/forget alias loo roll — take a name back. Also: /forget brand, /forget unit, /forget store
 When I had to guess the item, tap Same item or New item under my reply."""
 
 FORMAT_HINT = "Didn't catch that. Try: + rice 5kg $12 @ntuc — or /help for all formats."
@@ -52,6 +55,10 @@ ALIAS_USAGE = "Use it like this: /alias loo roll = toilet paper"
 SET_USAGE = "Use it like this: /set toilet paper pack 10"
 UNIT_USAGE = "Use it like this: /unit sticks = pcs"
 BRAND_USAGE = "Use it like this: /brand kans"
+LIST_USAGE = "Use it like this: /list toilet paper — for how much is left and of which brands. /listitems shows everything."
+RENAME_USAGE = "Use it like this: /rename dish soap = dishwashing liquid"
+FORGET_USAGE = ("Use it like this: /forget alias loo roll — or /forget brand kans — or /forget unit sticks "
+                "— or /forget store giant")
 NO_BRANDS = "No brands yet. Teach me one with /brand <name>."
 ENTRY_COMMAND_USAGE = "Use it like this: /add rice 5kg $12 @ntuc — or /used dish soap — or /stocktake rice 2x5kg"
 TOO_OLD_TO_CHANGE = "Too old to change — use /alias or /undo"
@@ -120,16 +127,43 @@ def ask_pack_size(item, entry, read_from=None) -> str:
     unit = item["base_unit"]
     size, word = _EXAMPLES[unit]
     count = _number((entry["quantity"] or {}).get("packs", 1))
-    price = f" {money(entry['total_price'])}" if entry.get("total_price") else ""
-    store = f" @{entry['store']}" if entry.get("store") else ""
-    named = " ".join(filter(None, [entry.get("brand"), entry["phrase"]])).lower()
-    example = f"{_KEYWORDS.get(entry['action'], '+')} {named} {count}x{size}{word}{price}{store}"
-    guess = f' (Read "{read_from}" as {item["name"]}.)' if read_from else ""
+    example = _resend(entry, f"{count}x{size}{word}")
+    guess = _guess_note(item, read_from)
     if unit in _COUNT_UNITS:
         return (f"How many in each pack of {item['name']}? Resend like: {example} — "
                 f"or write {count}{word} if you mean single {_COUNT_UNITS[unit]}.{guess}")
     return (f"How much is in each pack of {item['name']}? Resend like: {example} — "
             f"or write the total, like {size}{word}.{guess}")
+
+
+def ask_packs_or_units(item, entry, read_from=None) -> str:
+    """The question for a bare number in a sentence ("got 30 eggs"): that many, or that many packs?"""
+    unit = item["base_unit"]
+    count = entry["quantity"]["packs"]
+    example = _resend(entry, f"{_number(count)}{_EXAMPLES[unit][1]}")
+    return (f"Is that {quantity(count, unit)} of {item['name']}, or {_packs(count)}? Resend like: {example} — "
+            f"or write {_packs(count)} if you mean packs of {quantity(item['pack_size'], unit)}."
+            f"{_guess_note(item, read_from)}")
+
+
+def _resend(entry, amount) -> str:
+    """The sender's line in the format with the amount filled in, keeping the brand, price and store."""
+    price = f" {money(entry['total_price'])}" if entry.get("total_price") else ""
+    store = f" @{entry['store']}" if entry.get("store") else ""
+    named = " ".join(filter(None, [entry.get("brand"), entry["phrase"]])).lower()
+    return f"{_KEYWORDS.get(entry['action'], '+')} {named} {amount}{price}{store}"
+
+
+def _guess_note(item, read_from) -> str:
+    return f' (Read "{read_from}" as {item["name"]}.)' if read_from else ""
+
+
+def shared_total(amounts) -> str:
+    """Sent when a message gives one price for several items: nobody can say what each of them cost."""
+    one = len(amounts) == 1
+    return (f"{' and '.join(money(amount) for amount in amounts)} {'covers' if one else 'cover'} several items, "
+            f"so I haven't recorded {'it' if one else 'them'} as the price of any one. "
+            "Send an item with its own price to record it.")
 
 
 def wrong_unit(item) -> str:
@@ -177,6 +211,69 @@ def alias_toast(phrase, item) -> str:
 
 def new_item_toast(item) -> str:
     return f"Made a new item: {item['name']}"
+
+
+def forgot_alias(alias, items) -> str:
+    return f'Forgot "{alias}". It used to mean {" and ".join(item["name"] for item in items)}.'
+
+
+def alias_not_known(name) -> str:
+    return f'"{name}" isn\'t another name for anything I track. /list <item> shows an item\'s other names.'
+
+
+def alias_is_the_name(item) -> str:
+    return (f"{item['name']} is what the item is called, so there is nothing to forget. "
+            f"To change it: /rename {item['name'].lower()} = <new name>")
+
+
+def forgot_brand(name, entries, items) -> str:
+    """entries is how many entries carried the brand; items the names of the items they are on."""
+    if not entries:
+        return f'Forgot the brand "{name}". It wasn\'t on any entry.'
+    on, stays = ("1 entry", "That entry stays") if entries == 1 else (f"{entries} entries", "Those entries stay")
+    return f'Forgot the brand "{name}". It was on {on} ({", ".join(items)}). {stays}, without the brand.'
+
+
+def brand_not_known(name) -> str:
+    return f'I don\'t know "{name}" as a brand. /listbrands shows the ones I know.'
+
+
+def forgot_unit(word, meant) -> str:
+    return f'Forgot "{word}" as a unit word. It used to mean {meant}.'
+
+
+def unit_not_known(word) -> str:
+    return f'I don\'t know "{word}" as a unit word.'
+
+
+def forgot_store(name) -> str:
+    return f"Forgot the store {name}. Entries that name it keep it."
+
+
+def store_not_known(name) -> str:
+    return f'I don\'t have "{name}" as a saved store.'
+
+
+def built_in(name) -> str:
+    """For a unit word or a store that every household starts with."""
+    return f'"{name}" is built in, so I can\'t forget it.'
+
+
+def renamed(old_name, item, same_words=False) -> str:
+    """same_words: only the capitals or punctuation changed, so the old spelling still matches."""
+    text = f"Renamed {old_name} to {item['name']} (ID still {item['item_id']})."
+    if same_words:
+        return text
+    old = old_name.lower()
+    return f'{text} "{old}" no longer means it. To keep that name too: /alias {old} = {item["name"].lower()}'
+
+
+def already_named(item) -> str:
+    return f"It is already called {item['name']}."
+
+
+def name_taken(name, other) -> str:
+    return f'"{name}" already means {other["name"]}, so I\'ve left it alone.'
 
 
 def pack_size_set(item) -> str:
@@ -263,6 +360,32 @@ def cellar(items) -> str:
         amount = f" — {_stock(item)}" if item.get("stock_est") else ""
         groups[headings.get(item.get("status"), headings[None])].append(f"• {item['name']}{amount}")
     return "\n\n".join("\n".join([heading, *lines]) for heading, lines in groups.items() if lines)
+
+
+def item_detail(item, by_brand) -> str:
+    """The /list <item> reply. by_brand is model.brands_left: (brand or None, amount) for what should be at home."""
+    unit = item["base_unit"]
+    stock, status = item.get("stock_est"), item.get("status")
+    if stock:
+        left = _stock(item)
+    else:
+        left = "none" if stock == 0 or status == "out" else "not counted yet"
+    lines = [f"{item['name']} ({item['item_id']})", f"Left: {left}{', running low' if status == 'low' else ''}"]
+    if item.get("pack_size"):
+        lines.append(f"Pack size: {quantity(item['pack_size'], unit)}")
+    brands = [brand for brand, _ in by_brand if brand]
+    if brands:
+        # Nobody logs which pack they opened, so this is worked out, not counted.
+        lines.append("By brand, if the oldest is used first:")
+        lines += [f"• {brand or 'no brand'} — {quantity(amount, unit)}" for brand, amount in by_brand]
+    elif by_brand:
+        lines.append("Brand: not noted")
+    earlier = [brand for brand in item.get("brands", []) if brand not in brands]
+    if earlier:
+        lines.append(f"Bought before: {', '.join(earlier)}")
+    if item.get("aliases"):
+        lines.append(f"Also called: {', '.join(item['aliases'])}")
+    return "\n".join(lines)
 
 
 def _stock(item) -> str:

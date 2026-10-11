@@ -1,4 +1,5 @@
 """Replay tests for the Phase 1 part of the model: stock and status, in base units."""
+import random
 import unittest
 
 import fakes  # noqa: F401  (puts src/ on sys.path)
@@ -95,6 +96,72 @@ class ReplayTest(unittest.TestCase):
         self.assertEqual(model.replay(events)["status"], "out")
         undone = model.replay(events[:-1])
         self.assertEqual((undone["status"], undone["stock_est"]), ("ok", 20))
+
+
+class BrandsLeftTest(unittest.TestCase):
+    """What is left, split by brand: an estimate that takes the oldest purchase to be used first."""
+
+    KLEENEX_THEN_SCOTT = [ev("bought", 20, brand="Kleenex"), ev("bought", 30, brand="Scott")]
+
+    def left(self, *later, pack_size=None):
+        return model.brands_left(self.KLEENEX_THEN_SCOTT + list(later), pack_size)
+
+    def test_nothing_bought_means_nothing_left(self):
+        self.assertEqual(model.brands_left([]), [])
+        self.assertEqual(model.brands_left([ev("used", 5), ev("still_have"), ev("bought")]), [])
+
+    def test_purchases_add_up_per_brand_oldest_first_with_no_brand_last(self):
+        events = [ev("bought", 800), ev("bought", 1600, brand="Shokubutsu"), ev("bought", 800, brand="半亩花田"),
+                  ev("bought", 800, brand="SHOKUBUTSU")]
+        self.assertEqual(model.brands_left(events), [("Shokubutsu", 2400), ("半亩花田", 800), (None, 800)])
+
+    def test_what_is_used_comes_off_the_oldest_purchase(self):
+        self.assertEqual(self.left(ev("used", 5)), [("Kleenex", 15), ("Scott", 30)])
+        self.assertEqual(self.left(ev("used", 25)), [("Scott", 25)])
+        self.assertEqual(self.left(ev("used", 80)), [])
+
+    def test_a_used_entry_that_names_a_brand_comes_off_that_brand_first(self):
+        self.assertEqual(self.left(ev("used", 25, brand="scott")), [("Kleenex", 20), ("Scott", 5)])
+        self.assertEqual(self.left(ev("used", 40, brand="Scott")), [("Kleenex", 10)])
+        # A brand that isn't in stock changes nothing about the order.
+        self.assertEqual(self.left(ev("used", 5, brand="Vinda")), [("Kleenex", 15), ("Scott", 30)])
+
+    def test_running_out_clears_every_brand(self):
+        self.assertEqual(self.left(ev("finished")), [])
+        self.assertEqual(self.left(ev("finished"), ev("bought", 10, brand="Vinda")), [("Vinda", 10)])
+
+    def test_a_count_that_finds_less_takes_the_difference_off_the_oldest(self):
+        self.assertEqual(self.left(ev("stock_count", 35)), [("Kleenex", 5), ("Scott", 30)])
+        self.assertEqual(self.left(ev("stock_count", 0)), [])
+
+    def test_a_count_that_finds_more_adds_the_difference_under_the_brand_named_if_any(self):
+        self.assertEqual(self.left(ev("stock_count", 60)), [("Kleenex", 20), ("Scott", 30), (None, 10)])
+        self.assertEqual(self.left(ev("stock_count", 60, brand="Vinda")), [("Kleenex", 20), ("Scott", 30), ("Vinda", 10)])
+        self.assertEqual(model.brands_left([ev("stock_count", 12)]), [(None, 12)])
+
+    def test_opening_the_last_pack_leaves_one_pack_of_the_newest(self):
+        self.assertEqual(self.left(ev("opened_last"), pack_size=10), [("Scott", 10)])
+        self.assertEqual(self.left(ev("opened_last")), [("Kleenex", 20), ("Scott", 30)])
+
+    def test_older_entries_without_a_stored_total_count_too(self):
+        old = {"action": "bought", "packs": 2, "units_per_pack": 10, "brand": "Kleenex", "at": "2026-10-01T00:00:00Z"}
+        self.assertEqual(model.brands_left([old, ev("bought", brand="Scott", packs=1)], pack_size=10),
+                         [("Kleenex", 20), ("Scott", 10)])
+
+    def test_the_brands_always_add_up_to_the_stock_figure(self):
+        chooser = random.Random(7)
+        actions = ("bought", "bought", "used", "used", "stock_count", "opened_last", "finished", "still_have", "price_check")
+        for _ in range(2000):
+            pack_size = chooser.choice([None, 10, 0.5, 800])
+            events = [
+                ev(chooser.choice(actions), chooser.choice([None, 0, 1, 5, 10, 25, 0.3, 0.1, 1200]),
+                   brand=chooser.choice([None, None, "Lux", "lux", "Dettol"]))
+                for _ in range(chooser.randint(0, 12))
+            ]
+            left = model.brands_left(events, pack_size)
+            stock = model.replay(events, pack_size)["stock_est"]
+            self.assertAlmostEqual(sum(amount for _, amount in left), stock or 0, places=6, msg=events)
+            self.assertTrue(all(amount > 0 for _, amount in left), events)
 
 
 class OlderEventsTest(unittest.TestCase):

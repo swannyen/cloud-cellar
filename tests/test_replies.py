@@ -135,6 +135,33 @@ class QuestionTest(unittest.TestCase):
         text = replies.ask_pack_size(MASKS, self.entry("+ hand masks 2"), read_from="hand masks")
         self.assertTrue(text.endswith('(Read "hand masks" as Face masks.)'))
 
+    def test_asking_whether_a_bare_number_in_a_sentence_counts_packs(self):
+        entry = {"action": "bought", "phrase": "Eggs", "quantity": {"kind": "packs", "packs": 30, "bare": True},
+                 "total_price": 6.8, "store": "FairPrice", "brand": None}
+        eggs = {"item_id": "eggs", "name": "Eggs", "base_unit": "piece", "pack_size": 10}
+        self.assertEqual(
+            replies.ask_packs_or_units(eggs, entry),
+            "Is that 30 pieces of Eggs, or 30 packs? Resend like: + eggs 30pcs $6.80 @FairPrice — "
+            "or write 30 packs if you mean packs of 10 pieces.",
+        )
+        used = dict(entry, action="used", phrase="loo roll", quantity={"kind": "packs", "packs": 3, "bare": True},
+                    total_price=None, store=None)
+        text = replies.ask_packs_or_units(dict(TP, pack_size=10), used, read_from="loo roll")
+        self.assertEqual(text, "Is that 3 rolls of Toilet paper, or 3 packs? Resend like: - loo roll 3rolls — "
+                               'or write 3 packs if you mean packs of 10 rolls. (Read "loo roll" as Toilet paper.)')
+
+    def test_both_answers_to_that_question_are_read_by_the_format(self):
+        self.assertEqual(structured.parse_line("+ eggs 30pcs $6.80 @FairPrice")["quantity"],
+                         {"kind": "amount", "amount": 30, "unit": "piece"})
+        self.assertEqual(structured.parse_line("+ eggs 30 packs $6.80 @FairPrice")["quantity"], {"kind": "packs", "packs": 30})
+
+    def test_a_total_for_several_items_is_explained(self):
+        self.assertEqual(replies.shared_total([31.4]),
+                         "$31.40 covers several items, so I haven't recorded it as the price of any one. "
+                         "Send an item with its own price to record it.")
+        self.assertTrue(replies.shared_total([31.4, 7]).startswith(
+            "$31.40 and $7.00 cover several items, so I haven't recorded them as the price of any one."))
+
     def test_wrong_unit(self):
         self.assertEqual(replies.wrong_unit(MASKS), "Face masks are counted in pieces. Try 2pcs or 2x5pcs.")
         self.assertEqual(replies.wrong_unit(RICE), "Rice is counted in grams. Try 2kg or 2x5kg.")
@@ -165,7 +192,9 @@ class FixedTextTest(unittest.TestCase):
         for example in ("+ toilet paper 2x10 $12.90 @fairprice", "- dish soap", "- toilet paper 2", "low shampoo", "have rice 2x5kg",
                         "? detergent 3kg $8.95 @shengsiong"):
             self.assertIn(example, replies.HELP)
-        for command in ("/listitems", "/items", "/undo", "/alias", "/set", "/unit", "/brand", "/listbrands", "/stats", "/add", "/bought", "/used", "/stocktake"):
+        for command in ("/listitems", "/list toilet paper", "/items", "/undo", "/alias", "/rename", "/set", "/unit", "/brand",
+                        "/listbrands", "/forget alias", "/forget brand", "/forget unit", "/forget store", "/stats", "/add",
+                        "/bought", "/used", "/stocktake"):
             self.assertIn(command, replies.HELP)
         for rule in ("2pcs", "2x10rolls", "2pkt", "I ask instead of guessing"):
             self.assertIn(rule, replies.HELP)
@@ -192,6 +221,10 @@ class FixedTextTest(unittest.TestCase):
         self.assertIn("/set toilet paper pack 10", replies.SET_USAGE)
         self.assertIn("/unit sticks = pcs", replies.UNIT_USAGE)
         self.assertIn("/brand kans", replies.BRAND_USAGE)
+        self.assertIn("/list toilet paper", replies.LIST_USAGE)
+        self.assertIn("/rename dish soap = dishwashing liquid", replies.RENAME_USAGE)
+        for example in ("/forget alias loo roll", "/forget brand kans", "/forget unit sticks", "/forget store giant"):
+            self.assertIn(example, replies.FORGET_USAGE)
 
     def test_format_hint_matches_the_plan(self):
         self.assertEqual(replies.FORMAT_HINT, "Didn't catch that. Try: + rice 5kg $12 @ntuc — or /help for all formats.")
@@ -260,6 +293,69 @@ class CellarTest(unittest.TestCase):
     def test_only_the_groups_that_have_items_are_shown(self):
         self.assertEqual(replies.cellar([dict(SOAP, status="out", stock_est=0)]), "Out:\n• Dishwashing liquid")
         self.assertEqual(replies.cellar([dict(TP, status="ok")]), "In the cellar:\n• Toilet paper")
+
+
+class ItemDetailTest(unittest.TestCase):
+    """The /list <item> reply."""
+
+    BODY_WASH = {"item_id": "body-wash", "name": "Body wash", "base_unit": "ml"}
+
+    def test_everything_known_about_an_item(self):
+        item = dict(self.BODY_WASH, status="ok", stock_est=3400, pack_size=800, aliases=["shower gel", "bath gel"],
+                    brands=["Dettol", "Shokubutsu", "半亩花田"])
+        by_brand = [("Shokubutsu", 1800), ("半亩花田", 1200), (None, 400)]
+        self.assertEqual(replies.item_detail(item, by_brand), "\n".join([
+            "Body wash (body-wash)",
+            "Left: 3.4 L (4.25 packs)",
+            "Pack size: 800 ml",
+            "By brand, if the oldest is used first:",
+            "• Shokubutsu — 1.8 L",
+            "• 半亩花田 — 1.2 L",
+            "• no brand — 400 ml",
+            "Bought before: Dettol",
+            "Also called: shower gel, bath gel",
+        ]))
+
+    def test_an_item_nobody_has_counted(self):
+        self.assertEqual(replies.item_detail(dict(TP, aliases=[]), []), "Toilet paper (toilet-paper)\nLeft: not counted yet")
+        self.assertEqual(replies.item_detail(dict(TP, status="ok", stock_est=None), []),
+                         "Toilet paper (toilet-paper)\nLeft: not counted yet")
+
+    def test_stock_without_a_pack_size_or_a_brand(self):
+        self.assertEqual(replies.item_detail(dict(MASKS, status="ok", stock_est=17), [(None, 17)]),
+                         "Face masks (face-masks)\nLeft: 17 pieces\nBrand: not noted")
+
+    def test_low_and_out(self):
+        low = dict(TP, status="low", stock_est=10, pack_size=10)
+        self.assertEqual(replies.item_detail(low, [("Kleenex", 10)]).splitlines()[1], "Left: 10 rolls (1 pack), running low")
+        out = dict(TP, status="out", stock_est=0, pack_size=10, brands=["Kleenex"])
+        self.assertEqual(replies.item_detail(out, []),
+                         "Toilet paper (toilet-paper)\nLeft: none\nPack size: 10 rolls\nBought before: Kleenex")
+        # "low rice" for something never counted.
+        self.assertEqual(replies.item_detail(dict(RICE, status="low"), []), "Rice (rice)\nLeft: not counted yet, running low")
+
+
+class ForgetAndRenameTest(unittest.TestCase):
+    def test_forgetting(self):
+        self.assertEqual(replies.forgot_alias("loo roll", [TP]), 'Forgot "loo roll". It used to mean Toilet paper.')
+        self.assertEqual(replies.forgot_alias("soap", [SOAP, {"name": "Hand soap"}]),
+                         'Forgot "soap". It used to mean Dishwashing liquid and Hand soap.')
+        self.assertEqual(replies.forgot_brand("kans", 0, []), 'Forgot the brand "kans". It wasn\'t on any entry.')
+        self.assertEqual(replies.forgot_brand("kans", 1, ["Facial masks"]),
+                         'Forgot the brand "kans". It was on 1 entry (Facial masks). That entry stays, without the brand.')
+        self.assertEqual(replies.forgot_unit("sticks", "pcs"), 'Forgot "sticks" as a unit word. It used to mean pcs.')
+        self.assertEqual(replies.forgot_store("Giant"), "Forgot the store Giant. Entries that name it keep it.")
+        self.assertEqual(replies.built_in("kg"), '"kg" is built in, so I can\'t forget it.')
+
+    def test_renaming(self):
+        item = {"item_id": "facial-tissues", "name": "Home tissues"}
+        self.assertEqual(replies.renamed("Facial tissues", item),
+                         'Renamed Facial tissues to Home tissues (ID still facial-tissues). "facial tissues" no longer '
+                         "means it. To keep that name too: /alias facial tissues = home tissues")
+        self.assertEqual(replies.renamed("Home Tissues", item, same_words=True),
+                         "Renamed Home Tissues to Home tissues (ID still facial-tissues).")
+        # The command the reply suggests is one the bot reads.
+        self.assertIn("/alias facial tissues = home tissues", replies.renamed("Facial tissues", item))
 
 
 class ItemsListTest(unittest.TestCase):

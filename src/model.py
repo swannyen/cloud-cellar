@@ -1,9 +1,10 @@
 """Item state computed from the item's event history (pure, no I/O).
 
 Everything is in the item's base unit (pieces, rolls, sheets, g, ml), using each
-event's qty. Phase 1 covers stock and status only. Usage rates, run-out
-predictions and snoozing (PLAN.md §8.1) are added in Phase 2.
+event's qty. Phase 1 covers stock, status and which brands the stock is.
+Usage rates, run-out predictions and snoozing (PLAN.md §8.1) are added in Phase 2.
 """
+import matcher
 
 
 def replay(events, pack_size=None) -> dict:
@@ -41,6 +42,66 @@ def replay(events, pack_size=None) -> dict:
         # still_have and price_check don't change stock (still_have snoozes nudges in Phase 2).
         last_event_at = event.get("at", last_event_at)
     return {"status": status, "stock_est": stock, "last_event_at": last_event_at}
+
+
+def brands_left(events, pack_size=None) -> list:
+    """What should still be at home, split by brand: [(brand or None, amount)], oldest purchase first.
+
+    This is an estimate. An entry seldom says which pack was used, so the
+    oldest is taken to go first, unless the entry names a brand. Whatever a
+    count finds missing went the same way. The amounts add up to replay's
+    stock_est; what has no brand comes last.
+    """
+    lots = []        # [brand, amount] for each purchase with something left, oldest first
+    spellings = {}   # brand without capitals or punctuation -> the brand as first written
+    for event in events:
+        action = event["action"]
+        qty = event_qty(event, pack_size)
+        brand = matcher.plain(event.get("brand") or "") or None
+        if brand:
+            spellings.setdefault(brand, event["brand"])
+        if action == "bought":
+            if qty:
+                lots.append([brand, qty])
+        elif action == "stock_count":
+            if qty is not None:
+                _set_total(lots, qty, brand)
+        elif action == "opened_last":
+            if pack_size:
+                _set_total(lots, pack_size, brand)
+        elif action == "used":
+            if qty is not None:
+                _take(lots, qty, brand)
+        elif action == "finished":
+            lots.clear()
+    left = {}
+    for brand, amount in lots:
+        left[brand] = _rounded(left.get(brand, 0) + amount)
+    unbranded = left.pop(None, 0)
+    return [(spellings[brand], amount) for brand, amount in left.items()] + ([(None, unbranded)] if unbranded else [])
+
+
+def _take(lots, amount, brand=None):
+    """Use up an amount: the named brand's first, then the oldest."""
+    for lot in [lot for lot in lots if brand and lot[0] == brand] + lots:
+        taken = min(lot[1], amount)
+        lot[1] = _rounded(lot[1] - taken)
+        amount = _rounded(amount - taken)
+    lots[:] = [lot for lot in lots if lot[1] > 0]
+
+
+def _set_total(lots, total, brand):
+    """Make the lots add up to a counted amount. What is missing was used; anything extra is the brand named, if any."""
+    known = sum(amount for _, amount in lots)
+    if total < known:
+        _take(lots, _rounded(known - total))
+    elif total > known:
+        lots.append([brand, _rounded(total - known)])
+
+
+def _rounded(value):
+    value = round(value, 6)
+    return int(value) if value == int(value) else value
 
 
 def event_qty(event, pack_size=None):

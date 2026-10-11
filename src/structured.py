@@ -30,6 +30,7 @@ COMMANDS = {"/add": "bought", "/bought": "bought", "/used": "finished", "/stockt
 NO_QUANTITY = ("opened_last",)
 
 PACK = "pack"  # what a pack word counts, as opposed to a base unit
+COUNT_UNITS = ("piece", "roll", "sheet")  # base units that are counted, not weighed or poured
 
 # Unit word -> (base unit, multiplier). A number directly before one is a quantity.
 UNIT_WORDS = {
@@ -66,6 +67,7 @@ STORE_WORDS = ("from", "at")  # "from taobao", "at ntuc": only before a known st
 # Why resolve_quantity couldn't work out a total.
 NEED_PACK_SIZE = "need_pack_size"
 WRONG_UNIT = "wrong_unit"
+UNCLEAR_COUNT = "unclear_count"
 
 _NUMBER = r"\d+(?:\.\d+)?"
 _TIMES = re.compile(r"(\d)\s*[x×*]\s*(?=\d)", re.IGNORECASE)  # "2 x 10", "2×10", "2*10"
@@ -159,7 +161,9 @@ def read_quantity(text, units=None):
     """The one quantity in a piece of free text ("35 sticks", "pack of 10 rolls"), or None.
 
     Reads by the same rules as the format, but other words may sit around the
-    numbers, and a pack count with a size marked "each" is packs x size.
+    numbers, and a pack count with a size marked "each" is packs x size. A
+    number with no unit or pack word comes back marked "bare": in the format
+    that means packs, but nobody writing a sentence is thinking of that rule.
     """
     reading = _read(text, units or {}, loose=True)
     if reading is None or len(reading[1]) != 1:
@@ -170,15 +174,20 @@ def read_quantity(text, units=None):
 def resolve_quantity(quantity, base_unit, pack_size):
     """Work out an entry's total for an item, in the item's base unit.
 
-    Returns {"qty", "packs", "units_per_pack"}, or NEED_PACK_SIZE / WRONG_UNIT
-    when the total can't be known without guessing. No quantity means one
-    pack. units_per_pack is only set when the quantity was written as packs x size.
+    Returns {"qty", "packs", "units_per_pack"}, or NEED_PACK_SIZE / WRONG_UNIT /
+    UNCLEAR_COUNT when the total can't be known without guessing. No quantity
+    means one pack. units_per_pack is only set when the quantity was written as
+    packs x size.
     """
     quantity = quantity or {"kind": "packs", "packs": 1}
     kind = quantity["kind"]
     if kind == "packs":
         if not pack_size:
             return NEED_PACK_SIZE
+        # "30 eggs" in a sentence: 30 eggs, or 30 packs of them? Rice and shampoo aren't
+        # counted singly, so there a number on its own can only be packs.
+        if quantity.get("bare") and base_unit in COUNT_UNITS:
+            return UNCLEAR_COUNT
         return {"qty": _number(quantity["packs"] * pack_size), "packs": quantity["packs"], "units_per_pack": None}
     if not unit_fits(quantity["unit"], base_unit):
         return WRONG_UNIT
@@ -284,7 +293,8 @@ def _read(text, units, loose=False):
 
     Returns None for more than one price or quantity, or a number that can't be
     right (zero, or more packs than MAX_PACKS). With loose (free text), a pack
-    count plus a size marked "each" also reads as packs x size.
+    count plus a size marked "each" also reads as packs x size, and a bare
+    number is marked as one.
     """
     text = _SPACED_PRICE.sub("$", _TIMES.sub(r"\1x", _SIZE_TIMES.sub(r"\2x\1", text)))
     tokens = text.split()
@@ -312,7 +322,7 @@ def _read(text, units, loose=False):
         elif _TWO_DECIMALS.fullmatch(core):
             prices.append(_number(core))                                      # "1.86"
         elif _BARE.fullmatch(core):
-            parts.append({"kind": "packs", "packs": _number(core)})           # a bare "2"
+            parts.append(_bare(core, marked=loose))                           # a bare "2"
         elif core.lower() == "for" and index + 1 < len(tokens) and _is_price(tokens[index + 1]):
             pass                                                              # "... for $1.96": not an item word
         else:
@@ -375,6 +385,12 @@ def _from_pair(count, amount) -> dict:
 
 def _packs_of(packs, size, unit) -> dict:
     return {"kind": "packs_of", "packs": packs, "size": size, "unit": unit}
+
+
+def _bare(number, marked) -> dict:
+    """A number on its own counts packs. Free text marks it, so that resolve_quantity can ask instead."""
+    quantity = {"kind": "packs", "packs": _number(number)}
+    return {**quantity, "bare": True} if marked else quantity
 
 
 def _counted(number, unit) -> dict:

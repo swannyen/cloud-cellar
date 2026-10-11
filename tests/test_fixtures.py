@@ -37,7 +37,7 @@ class FixtureFileTest(unittest.TestCase):
 
     def test_expected_events_are_well_formed(self):
         all_ids = {item["item_id"] for item in self.known_items}
-        allowed = {"action", "item_id", "new", "base_unit", "qty", "packs", "total_price", "store", "brand"}
+        allowed = {"action", "item_id", "new", "base_unit", "qty", "packs", "count", "total_price", "store", "brand"}
         for fixture in self.fixtures:
             known = set(fixture.get("known", all_ids))
             self.assertLessEqual(known, all_ids, fixture["id"])
@@ -46,7 +46,7 @@ class FixtureFileTest(unittest.TestCase):
                     self.assertLessEqual(set(event), allowed)
                     self.assertIn(event["action"], ai.ACTIONS)
                     self.assertNotEqual("item_id" in event, "new" in event, "needs item_id or new, not both")
-                    self.assertFalse("qty" in event and "packs" in event, "a total or a pack count, not both")
+                    self.assertLessEqual(len({"qty", "packs", "count"} & set(event)), 1, "one way of giving the quantity")
                     if "item_id" in event:
                         self.assertIn(event["item_id"], known)
                     else:
@@ -181,6 +181,15 @@ class GraderTest(unittest.TestCase):
         blank = dict(total_price=None, store=None)
         self.assertTrue(self.passes(fixture, self.got(action="stock_count", quantity={"kind": "packs", "packs": 3}, **blank)))
         self.assertFalse(self.passes(fixture, self.got(action="stock_count", quantity={"kind": "amount", "amount": 3, "unit": "g"}, **blank)))
+
+    def test_a_number_that_does_not_say_what_it_counts_is_not_a_pack_count(self):
+        blank = dict(total_price=None, store=None)
+        counted = dict(self.FIXTURE, expect=[{"action": "bought", "item_id": "rice", "count": 30}])
+        packs = dict(self.FIXTURE, expect=[{"action": "bought", "item_id": "rice", "packs": 30}])
+        bare = self.got(quantity={"kind": "packs", "packs": 30, "bare": True}, **blank)
+        named = self.got(quantity={"kind": "packs", "packs": 30}, **blank)
+        self.assertEqual([self.passes(counted, bare), self.passes(counted, named)], [True, False])
+        self.assertEqual([self.passes(packs, bare), self.passes(packs, named)], [False, True])
 
     def test_a_value_where_none_is_expected_is_wrong(self):
         fixture = dict(self.FIXTURE, expect=[{"action": "finished", "item_id": "rice"}])

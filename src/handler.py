@@ -163,11 +163,10 @@ def _handle_chat(update_id, text, sender, sent_at):
         rejected += len(free_text)
     elif free_text:
         block = "\n".join(free_text)
-        found, question = _read_free_text(update_id, block, sender, items, lookups, sent_at, counts)
+        found, said = _read_free_text(update_id, block, sender, items, lookups, sent_at, counts)
         entries += found
-        if question:
-            notes.append(question)
-        elif not found:
+        notes += said
+        if not found and not said:
             rejected += attempts  # tried the format, and the AI couldn't read it either
 
     lines, rows = [], []
@@ -210,21 +209,26 @@ def _read_line(line, items, lookups):
 
 
 def _read_free_text(update_id, text, sender, items, lookups, sent_at, counts):
-    """Ask the AI fallback what the free-text lines say. Returns (entries, a question to ask or None)."""
+    """Ask the AI fallback what the free-text lines say. Returns (entries, lines to add to the reply)."""
     today = datetime.fromtimestamp(sent_at, apply.SGT).date()
     try:
         parsed = ai.parse_free_text(text, sender["name"], items, today)
     except claude_api.ClaudeError:
         # Lines in the format are still recorded.
         logger.exception("update %s: free-text fallback failed", update_id)
-        return [], replies.FREE_TEXT_FAILED
+        return [], [replies.FREE_TEXT_FAILED]
     counts["ai_full_calls"] += 1
     logger.info(
         "update %s: free text, tokens in/out %s/%s",
         update_id, parsed.usage.get("input_tokens"), parsed.usage.get("output_tokens"),
     )
     # Only what is written in the message survives: see ai.ground_free_text.
-    return ai.ground_free_text(parsed.events, text, lookups.stores, lookups.units), parsed.clarify
+    entries = ai.ground_free_text(parsed.events, text, lookups.stores, lookups.units)
+    notes = [parsed.clarify] if parsed.clarify else []
+    shared = ai.shared_totals(parsed.events, text)
+    if shared:
+        notes.append(replies.shared_total(shared))
+    return entries, notes
 
 
 def _count(sent_at, counts):

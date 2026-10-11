@@ -184,6 +184,18 @@ class CommandRouteTest(HandlerTestCase):
         self.assertEqual(self.replies(), [replies.HELP])
         self.assertIn("/undo", replies.HELP)
 
+    def test_list_rename_and_forget_are_routed(self):
+        self.add_item("toilet-paper", "Toilet paper", "roll", ["loo roll"])
+        self.call(message_update(update_id=1, text="/list@bettynuffbot loo roll"))
+        self.call(message_update(update_id=2, text="/forget alias loo roll"))
+        self.call(message_update(update_id=3, text="/rename toilet paper = bathroom tissue"))
+        self.call(message_update(update_id=4, text="/list"))
+        listed, forgot, renamed, usage = self.replies()
+        self.assertEqual(listed, "Toilet paper (toilet-paper)\nLeft: not counted yet\nAlso called: loo roll")
+        self.assertEqual(forgot, 'Forgot "loo roll". It used to mean Toilet paper.')
+        self.assertIn("Renamed Toilet paper to Bathroom tissue", renamed)
+        self.assertEqual(usage, replies.LIST_USAGE)
+
     def test_alias_and_stats_are_routed(self):
         self.add_item("toilet-paper", "Toilet paper", "roll")
         self.call(message_update(update_id=1, text="/alias loo roll = toilet paper"))
@@ -535,6 +547,33 @@ class FreeTextRouteTest(HandlerTestCase):
         self.call(message_update(text="the big bottle of soap is finished"))
         self.assertEqual(self.replies(), ["Which soap did you finish?"])
         self.assertEqual(self.table.keys("EVT#"), [])
+
+    def test_one_total_for_several_items_goes_on_none_of_them_and_the_reply_says_so(self):
+        # The model puts the whole bill on the first item.
+        self.ai_reads(
+            free_event(item_id="toilet-paper", item_name="toilet paper", quantity_text="10 rolls", total_price=31.4, store="ntuc"),
+            free_event(item_id="face-masks", item_name="face masks", base_unit="piece", quantity_text="50 pcs", store="ntuc"),
+        )
+        self.call(message_update(text="ntuc run: toilet paper 10 rolls and face masks 50 pcs, $31.40 total"))
+        self.assertEqual(self.replies(), ["\n".join([
+            "✓ Toilet paper: bought 10 rolls at FairPrice.",
+            "✓ Face masks: bought 50 pieces at FairPrice.",
+            "$31.40 covers several items, so I haven't recorded it as the price of any one. "
+            "Send an item with its own price to record it.",
+        ])])
+        self.assertNotIn("total_price", store.list_events("toilet-paper")[0])
+
+    def test_a_bare_number_in_a_sentence_is_asked_about_and_nothing_is_recorded(self):
+        self.add_item("eggs", "Eggs", "piece", pack_size=10, pack_size_set_at="2026-10-01T00:00:00Z")
+        self.ai_reads(free_event(item_id="eggs", item_name="eggs", base_unit="piece", quantity_text="30 eggs"))
+        self.call(message_update(update_id=1, text="got 30 eggs"))
+        self.assertEqual(self.replies(), ["Is that 30 pieces of Eggs, or 30 packs? Resend like: + eggs 30pcs — "
+                                          "or write 30 packs if you mean packs of 10 pieces."])
+        self.assertEqual(self.table.keys("EVT#"), [])
+        self.assertEqual(self.stats(), {"ai_full_calls": 1, "lines_rejected": 1})
+        # Typed in the format, a bare number is packs, as /help says.
+        self.call(message_update(update_id=2, text="+ eggs 30"))
+        self.assertEqual(self.replies()[1], "✓ Eggs: bought 30 packs × 10 pieces (300 pieces).")
 
     def test_free_text_lines_share_one_call_and_format_lines_skip_it(self):
         self.ai_reads(free_event("finished", item_id="rice", item_name="rice", base_unit="g"))

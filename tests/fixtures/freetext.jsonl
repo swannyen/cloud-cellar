@@ -3,7 +3,7 @@
 {"id": "rice-5kg", "text": "Got rice from Sheng Siong, 5kg bag $13.50", "expect": [{"action": "bought", "item_id": "rice", "total_price": 13.5, "store": "Sheng Siong", "qty": 5000}]}
 {"id": "dish-soap-refill", "text": "restocked dish soap - Mama Lemon 1L refill, $2.95 at Giant", "expect": [{"action": "bought", "item_id": "dish-soap", "total_price": 2.95, "store": "Giant", "brand": "Mama Lemon", "qty": 1000}]}
 {"id": "milk-3x2l", "text": "bought 3 x 2L milk at cold storage, $6.50 each", "expect": [{"action": "bought", "item_id": "milk", "store": "Cold Storage", "qty": 6000}]}
-{"id": "eggs-tray", "text": "got a tray of 30 eggs $6.80 ntuc", "expect": [{"action": "bought", "item_id": "eggs", "total_price": 6.8, "store": "FairPrice", "packs": 30}]}
+{"id": "eggs-tray", "text": "got a tray of 30 eggs $6.80 ntuc", "expect": [{"action": "bought", "item_id": "eggs", "total_price": 6.8, "store": "FairPrice", "count": 30}]}
 {"id": "toothpaste-twin", "text": "bought Darlie toothpaste twin pack 2x225g for 7.90 at watsons", "expect": [{"action": "bought", "item_id": "toothpaste", "total_price": 7.9, "store": "Watsons", "brand": "Darlie", "qty": 450}]}
 {"id": "oil-and-tp", "text": "bought cooking oil 2L $8.45 sheng siong, and a 10-roll pack of TP for $6.50", "expect": [{"action": "bought", "item_id": "cooking-oil", "total_price": 8.45, "store": "Sheng Siong", "qty": 2000}, {"action": "bought", "item_id": "toilet-paper", "total_price": 6.5, "store": {"any": ["Sheng Siong", null]}, "qty": 10}]}
 {"id": "new-body-wash", "text": "bought Dettol body wash 950ml $9.90 at Guardian", "expect": [{"action": "bought", "new": ["body wash", "shower"], "base_unit": "ml", "total_price": 9.9, "store": "Guardian", "brand": "Dettol", "qty": 950}]}
@@ -15,7 +15,7 @@
 {"id": "hand-soap-each", "text": "bought hand soap refill 500ml x2 at $3.20 each from Guardian", "expect": [{"action": "bought", "item_id": "hand-soap", "store": "Guardian", "qty": 1000}]}
 {"id": "ntuc-run", "text": "NTUC run: eggs, milk and rice. $31.40 total", "expect": [{"action": "bought", "item_id": "eggs", "store": "FairPrice"}, {"action": "bought", "item_id": "milk", "store": "FairPrice"}, {"action": "bought", "item_id": "rice", "store": "FairPrice"}]}
 {"id": "new-soy-sauce", "text": "bought 1 bottle of Kikkoman soy sauce 600ml at Don Don Donki for $5.90", "expect": [{"action": "bought", "new": ["soy sauce"], "base_unit": "ml", "total_price": 5.9, "store": "Don Don Donki", "brand": "Kikkoman", "qty": 600}]}
-{"id": "new-coffee-sticks", "text": "bought Nescafe 3-in-1 at Giant $7.20, 35 sticks", "expect": [{"action": "bought", "new": ["coffee"], "base_unit": "piece", "total_price": 7.2, "store": "Giant", "brand": "Nescafe", "packs": 35}]}
+{"id": "new-coffee-sticks", "text": "bought Nescafe 3-in-1 at Giant $7.20, 35 sticks", "expect": [{"action": "bought", "new": ["coffee"], "base_unit": "piece", "total_price": 7.2, "store": "Giant", "brand": "Nescafe", "count": 35}]}
 {"id": "finished-dish-soap", "text": "finished the dish soap", "expect": [{"action": "finished", "item_id": "dish-soap"}]}
 {"id": "rice-finish", "text": "rice finish already", "expect": [{"action": "finished", "item_id": "rice"}]}
 {"id": "no-more-eggs", "text": "no more eggs", "expect": [{"action": "finished", "item_id": "eggs"}]}
@@ -62,7 +62,7 @@
 {"id": "heldout-chat-soap-opera", "text": "is the soap opera on tonight?", "known": ["toilet-paper"], "expect": []}
 {"id": "ground-facial-masks-taobao", "text": "Facial masks 5 pcs 1.86 from Taobao", "expect": [{"action": "bought", "new": ["facial"], "base_unit": "piece", "qty": 5, "total_price": 1.86, "store": "Taobao"}]}
 {"id": "ground-hand-masks-taobao", "text": "HAND masks 10 pcs $1.45 from Taobao", "expect": [{"action": "bought", "new": ["hand"], "base_unit": "piece", "qty": 10, "total_price": 1.45, "store": "Taobao"}]}
-{"id": "ground-unknown-unit-word", "text": "got 35 sticks of instant coffee for 7.20 on taobao", "expect": [{"action": "bought", "new": ["coffee"], "base_unit": {"any": ["piece", "g"]}, "packs": 35, "total_price": 7.2, "store": "Taobao"}]}
+{"id": "ground-unknown-unit-word", "text": "got 35 sticks of instant coffee for 7.20 on taobao", "expect": [{"action": "bought", "new": ["coffee"], "base_unit": {"any": ["piece", "g"]}, "count": 35, "total_price": 7.2, "store": "Taobao"}]}
 {"id": "ground-no-store", "text": "body wash 900ml x 2, $9.80", "known": ["toilet-paper", "face-masks"], "expect": [{"action": "bought", "new": ["body wash", "shower"], "base_unit": "ml", "qty": 1800, "total_price": 9.8}]}
 {"id": "ground-foot-masks-not-face-masks", "text": "ordered foot mask 1 box 10pcs, $1.45, from tb", "expect": [{"action": "bought", "new": ["foot"], "base_unit": "piece", "qty": 10, "total_price": 1.45, "store": "Taobao"}]}
 {"id": "brand-then-facial-masks", "text": "bought 2 pcs Kans facial masks for 1.96 from Taobao", "expect": [{"action": "bought", "new": ["facial"], "base_unit": "piece", "qty": 2, "total_price": 1.96, "store": "Taobao", "brand": {"any": ["Kans", null]}}]}
@@ -70,3 +70,6 @@
 {"id": "used-some-toilet-paper", "text": "used 3 rolls of toilet paper for the guests", "expect": [{"action": "used", "item_id": "toilet-paper", "qty": 3}]}
 {"id": "used-some-rice", "text": "took 2kg of rice for the party", "expect": [{"action": "used", "item_id": "rice", "qty": 2000}]}
 {"id": "used-up-is-finished", "text": "used up all the shampoo this morning", "expect": [{"action": "finished", "item_id": "shampoo"}]}
+{"id": "shared-total-with-sizes", "text": "giant today: toilet paper 10 rolls and dish soap 1L, $9.80 altogether", "expect": [{"action": "bought", "item_id": "toilet-paper", "store": "Giant", "qty": 10}, {"action": "bought", "item_id": "dish-soap", "store": "Giant", "qty": 1000}]}
+{"id": "own-prices-and-a-total", "text": "bought rice 5kg $13.50 and eggs $6.80 at sheng siong, total $20.30", "expect": [{"action": "bought", "item_id": "rice", "qty": 5000, "total_price": 13.5, "store": "Sheng Siong"}, {"action": "bought", "item_id": "eggs", "total_price": 6.8, "store": "Sheng Siong"}]}
+{"id": "bare-count-used", "text": "took 4 kitchen towel to the office", "expect": [{"action": "used", "item_id": "kitchen-towel", "count": 4}]}

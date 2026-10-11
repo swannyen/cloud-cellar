@@ -4,7 +4,7 @@ import unittest
 import fakes  # noqa: F401  (puts src/ on sys.path)
 
 import structured
-from structured import NEED_PACK_SIZE, UNREADABLE, WRONG_UNIT
+from structured import NEED_PACK_SIZE, UNCLEAR_COUNT, UNREADABLE, WRONG_UNIT
 
 DONKI = {"store_id": "don-don-donki", "name": "Don Don Donki", "aliases": ["donki"]}
 
@@ -15,6 +15,11 @@ def amount(value, unit):
 
 def packs(count):
     return {"kind": "packs", "packs": count}
+
+
+def bare(count):
+    """A number with no unit or pack word, as free text marks it."""
+    return {"kind": "packs", "packs": count, "bare": True}
 
 
 def packs_of(count, size, unit=None):
@@ -397,6 +402,22 @@ class ResolveQuantityTest(unittest.TestCase):
         self.assertEqual(self.resolve("3L", "g")["qty"], 3000)
         self.assertEqual(self.resolve("2x500g", "ml")["qty"], 1000)
 
+    def test_bare_number_from_a_sentence_is_not_taken_for_packs_of_something_counted(self):
+        # "got 30 eggs": 30 eggs, or 30 trays?
+        for base_unit in ("piece", "roll", "sheet"):
+            with self.subTest(base_unit=base_unit):
+                self.assertEqual(structured.resolve_quantity(bare(30), base_unit, 10), UNCLEAR_COUNT)
+        # Without a pack size the usual question already offers both readings.
+        self.assertEqual(structured.resolve_quantity(bare(30), "piece", None), NEED_PACK_SIZE)
+
+    def test_bare_number_from_a_sentence_still_counts_packs_of_what_is_weighed_or_poured(self):
+        # "got 2 shampoo" can only be 2 bottles.
+        self.assertEqual(structured.resolve_quantity(bare(2), "ml", 500), {"qty": 1000, "packs": 2, "units_per_pack": None})
+        self.assertEqual(structured.resolve_quantity(bare(2), "g", 5000)["qty"], 10000)
+
+    def test_in_the_format_a_bare_number_is_packs_as_the_help_says(self):
+        self.assertEqual(self.resolve("30", "piece", pack_size=10), {"qty": 300, "packs": 30, "units_per_pack": None})
+
 
 class FreeTextQuantityTest(unittest.TestCase):
     """read_quantity: the same rules, for quantity words copied out of a sentence."""
@@ -404,7 +425,7 @@ class FreeTextQuantityTest(unittest.TestCase):
     def test_forms_shared_with_the_format(self):
         cases = {
             "5 pcs": amount(5, "piece"), "5kg bag": amount(5000, "g"), "3 x 2L": packs_of(3, 2000, "ml"),
-            "2x10 rolls": packs_of(2, 10, "roll"), "3 bottles": packs(3), "2": packs(2),
+            "2x10 rolls": packs_of(2, 10, "roll"), "3 bottles": packs(3), "2": bare(2),
             "2 packs of 10 rolls": packs_of(2, 10, "roll"), "twin pack 2x225g": packs_of(2, 225, "g"),
             "10-roll pack": amount(10, "roll"), "500ml x2": packs_of(2, 500, "ml"),
             "2 packs for $9.90 (usual 6.50 each), 6 rolls per pack": packs_of(2, 6, "roll"),
@@ -425,8 +446,18 @@ class FreeTextQuantityTest(unittest.TestCase):
         self.assertEqual(structured.read_quantity("a box of 100 sheets"), packs_of(1, 100, "sheet"))
 
     def test_taught_words_and_unknown_words(self):
-        self.assertEqual(structured.read_quantity("2 sticks"), packs(2))
+        self.assertEqual(structured.read_quantity("2 sticks"), bare(2))
         self.assertEqual(structured.read_quantity("2 sticks", {"sticks": "pcs"}), amount(2, "piece"))
+
+    def test_number_that_does_not_say_what_it_counts_is_marked(self):
+        for text in ("30", "a tray of 30 eggs", "30 eggs", "35 sticks"):
+            with self.subTest(text=text):
+                self.assertTrue(structured.read_quantity(text)["bare"])
+        # A pack word or a size says what the number counts, and the format never marks one.
+        for text in ("3 bottles", "2 pkt", "2 packs toilet paper 10 rolls each", "2 toilet paper 10 rolls each"):
+            with self.subTest(text=text):
+                self.assertNotIn("bare", structured.read_quantity(text))
+        self.assertEqual(structured.parse_line("+ eggs 30")["quantity"], packs(30))
 
     def test_text_that_is_not_one_clear_quantity(self):
         for text in ("some", "a few", "2 packs 10 rolls", "2 3", ""):

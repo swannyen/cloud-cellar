@@ -116,6 +116,10 @@ def save_store(store_id, name, at):
     _put(STORE_PK, store_id, {"name": name, "aliases": [], "last_used_at": at})
 
 
+def delete_store(store_id):
+    _delete(STORE_PK, store_id)
+
+
 # --- Unit words taught with /unit ------------------------------------------------
 
 def list_units() -> dict:
@@ -127,6 +131,10 @@ def save_unit(word, means, added_by):
     _put(UNIT_PK, word, {"means": means, "added_by": added_by})
 
 
+def delete_unit(word):
+    _delete(UNIT_PK, word)
+
+
 # --- Brands taught with /brand ----------------------------------------------------
 
 def list_brands() -> list:
@@ -136,6 +144,10 @@ def list_brands() -> list:
 
 def save_brand(brand_id, name, added_by):
     _put(BRAND_PK, brand_id, {"name": name, "added_by": added_by})
+
+
+def delete_brand(brand_id):
+    _delete(BRAND_PK, brand_id)
 
 
 # --- Guessed matches waiting for a button tap -------------------------------------

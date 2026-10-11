@@ -68,6 +68,10 @@ def apply_entries(entries, *, items, sender, update_id, at, brands=()) -> tuple:
             counts["lines_rejected"] += 1
             lines.append(replies.ask_pack_size(item, entry, guessed))
             continue
+        if amount == structured.UNCLEAR_COUNT:
+            counts["lines_rejected"] += 1
+            lines.append(replies.ask_packs_or_units(item, entry, guessed))
+            continue
         if amount == structured.WRONG_UNIT:
             counts["lines_rejected"] += 1
             lines.append(replies.wrong_unit(item))

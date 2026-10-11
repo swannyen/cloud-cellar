@@ -148,13 +148,35 @@ class GroundingTest(unittest.TestCase):
         entry = ground("2 boxes of masks at $3.20 each", total_price=6.4)
         self.assertEqual((entry["total_price"], entry["missed"]), (None, ("price",)))
 
-    def test_one_total_put_on_several_items_backs_none_of_them(self):
+    def test_one_price_put_on_several_items_backs_none_of_them(self):
         shared = [event(item_id="eggs", total_price=31.4), event(item_id="milk", total_price=31.4)]
-        entries = ai.ground_free_text(shared, "NTUC run: eggs and milk. $31.40 total")
+        entries = ai.ground_free_text(shared, "NTUC run: eggs and milk. $31.40")
         self.assertEqual([(e["total_price"], e["missed"]) for e in entries], [(None, ("price",)), (None, ("price",))])
         # Written twice, it can back two.
         entries = ai.ground_free_text(shared, "eggs $31.40, milk $31.40")
         self.assertEqual([e["total_price"] for e in entries], [31.4, 31.4])
+
+    def test_a_total_for_several_items_is_kept_off_all_of_them(self):
+        # The model put the whole bill on the first item. Once is "written once", so only this rule stops it.
+        events = [event(item_id="eggs", total_price=31.4), event(item_id="milk"), event(item_id="rice")]
+        entries = ai.ground_free_text(events, "NTUC run: eggs, milk and rice. $31.40 total")
+        # Not "missed": the reply says once that the total covers several items.
+        self.assertEqual([(e["total_price"], e["missed"]) for e in entries], [(None, ())] * 3)
+
+    def test_a_price_of_its_own_stays_when_the_message_also_has_a_total(self):
+        events = [event(item_id="rice", total_price=12), event(item_id="eggs", total_price=5)]
+        entries = ai.ground_free_text(events, "rice $12, eggs $5, total $17")
+        self.assertEqual([e["total_price"] for e in entries], [12, 5])
+        entries = ai.ground_free_text(events, "bought rice $12 and eggs $5")
+        self.assertEqual([e["total_price"] for e in entries], [12, 5])
+
+    def test_with_one_purchase_a_total_is_simply_its_price(self):
+        entry = ground("rice, 2 bags, $24 total", total_price=24)
+        self.assertEqual((entry["total_price"], entry["missed"]), (24, ()))
+        # Something that ran out in the same message isn't a second purchase.
+        bought, _ = ai.ground_free_text([event(total_price=24), event(action="finished", item_id="rice")],
+                                        "masks $24 in total, and the rice finished")
+        self.assertEqual(bought["total_price"], 24)
 
     def test_quantity_must_be_written_word_for_word(self):
         self.assertEqual(ground("masks, 10  PCS today", quantity_text="10 pcs")["quantity"],
@@ -177,7 +199,9 @@ class GroundingTest(unittest.TestCase):
         text = "bought 2 packs toilet paper 10 rolls each, also 2 sticks of masks"
         self.assertEqual(ground(text, quantity_text="2 packs toilet paper 10 rolls each")["quantity"],
                          {"kind": "packs_of", "packs": 2, "size": 10, "unit": "roll"})
-        self.assertEqual(ground(text, quantity_text="2 sticks")["quantity"], {"kind": "packs", "packs": 2})
+        # A number that doesn't say what it counts is marked, for the caller to ask about.
+        self.assertEqual(ground(text, quantity_text="2 sticks")["quantity"], {"kind": "packs", "packs": 2, "bare": True})
+        self.assertEqual(ground("got 3 boxes of masks", quantity_text="3 boxes")["quantity"], {"kind": "packs", "packs": 3})
         self.assertEqual(ground(text, units={"sticks": "pcs"}, quantity_text="2 sticks")["quantity"],
                          {"kind": "amount", "amount": 2, "unit": "piece"})
 
@@ -209,6 +233,58 @@ class GroundingTest(unittest.TestCase):
         )
         self.assertEqual([(e["store"], e["total_price"], e["missed"]) for e in entries],
                          [("Giant", 3, ()), (None, None, ("store", "price"))])
+
+
+def bought(count):
+    return [event() for _ in range(count)]
+
+
+class SharedTotalTest(unittest.TestCase):
+    """A price next to "total", "altogether" and the like, in a message with several purchases."""
+
+    def test_totals_are_found_before_or_after_the_word(self):
+        cases = {
+            "NTUC run: eggs, milk and rice. $31.40 total": [31.4],
+            "Sheng Siong trip: bread and peanut butter, $7.80 altogether": [7.8],
+            "eggs and milk, 31.40 for everything": [31.4],
+            "shampoo and conditioner $15 for both": [15],
+            "coffee and milk $12 in all": [12],
+            "Total: $31.40 (eggs, milk)": [31.4],
+            "total came up to $31.40": [31.4],
+            "paid a total of $31.40 for eggs and milk": [31.4],
+            "eggs $3.10\nmilk $4\nTotal 7.10": [7.1],
+            "鸡蛋和牛奶一共31.40": [31.4],
+        }
+        for text, expected in cases.items():
+            with self.subTest(text=text):
+                self.assertEqual(ai.shared_totals(bought(2), text), expected)
+
+    def test_the_word_goes_with_one_number_only(self):
+        cases = {
+            "rice $12, eggs $5, total $17": [17],      # not the $5 just before the comma
+            "rice $12, eggs $5, total 17": [17],
+            "rice $12 eggs $5 total $17": [17],
+            "$9.90 total 2 packs of each": [9.9],      # the one written as a price
+            "$31.40 in total for 3 items": [31.4],
+            "2 packs each, total $9.90": [9.9],
+            "eggs $3 and milk $4. Total was $7.": [7],
+        }
+        for text, expected in cases.items():
+            with self.subTest(text=text):
+                self.assertEqual(ai.shared_totals(bought(2), text), expected)
+
+    def test_messages_without_a_shared_total(self):
+        for text in ("bought rice $12 and eggs", "rice $12, eggs $5", "totally out of rice and eggs, $5 each",
+                     "eggs and milk. The total for this very long trip today was $40"):
+            with self.subTest(text=text):
+                self.assertEqual(ai.shared_totals(bought(2), text), [])
+
+    def test_it_takes_two_purchases_or_price_checks_to_share_a_total(self):
+        text = "$31.40 total"
+        self.assertEqual(ai.shared_totals(bought(1), text), [])
+        self.assertEqual(ai.shared_totals([event(), event(action="finished")], text), [])
+        self.assertEqual(ai.shared_totals([event(), event(action="price_check")], text), [31.4])
+        self.assertEqual(ai.shared_totals([], text), [])
 
 
 class LooksLikeLogTest(unittest.TestCase):

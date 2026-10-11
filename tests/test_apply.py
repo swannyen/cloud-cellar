@@ -666,6 +666,40 @@ class FreeTextTest(ApplyTestCase):
         self.assertIn("How many in each pack of Face masks?", lines[0])
         self.assertEqual(self.table.keys("EVT#"), [])
 
+    def test_bare_number_for_something_counted_is_asked_about_not_taken_for_packs(self):
+        self.add_item("eggs", "Eggs", "piece", pack_size=10, pack_size_set_at=AT)
+        lines, counts, buttons = self.said("got 30 eggs $6.80 ntuc", dict(
+            item_id="eggs", item_name="eggs", base_unit="piece", quantity_text="30 eggs", total_price=6.8, store="ntuc"))
+        self.assertEqual(lines, ["Is that 30 pieces of Eggs, or 30 packs? Resend like: + eggs 30pcs $6.80 @FairPrice — "
+                                 "or write 30 packs if you mean packs of 10 pieces."])
+        self.assertEqual((counts, buttons), ({"lines_rejected": 1}, []))
+        self.assertEqual(self.table.keys("EVT#"), [])
+        # Either answer is then read by the format.
+        self.assertEqual(self.lines("+ eggs 30pcs $6.80 @FairPrice", update_id=2),
+                         ["✓ Eggs: bought 30 pieces for $6.80 at FairPrice ($0.23/piece)."])
+        self.assertEqual(self.lines("+ eggs 30 packs", update_id=3), ["✓ Eggs: bought 30 packs × 10 pieces (300 pieces)."])
+
+    def test_bare_number_is_asked_about_for_a_count_and_for_what_was_used_too(self):
+        self.add_toilet_paper(pack_size=10, pack_size_set_at=AT)
+        lines, _, _ = self.said("we have 3 toilet paper left", dict(
+            action="stock_count", item_id="toilet-paper", item_name="toilet paper", quantity_text="3 toilet paper"))
+        self.assertEqual(lines, ["Is that 3 rolls of Toilet paper, or 3 packs? Resend like: have toilet paper 3rolls — "
+                                 "or write 3 packs if you mean packs of 10 rolls."])
+        lines, _, _ = self.said("used 2 toilet paper", dict(
+            action="used", item_id="toilet-paper", item_name="toilet paper", quantity_text="2"))
+        self.assertIn("Resend like: - toilet paper 2rolls — or write 2 packs", lines[0])
+        self.assertEqual(self.table.keys("EVT#"), [])
+
+    def test_bare_number_for_something_weighed_or_poured_is_packs(self):
+        self.add_item("shampoo", "Shampoo", "ml", pack_size=500, pack_size_set_at=AT)
+        lines, _, _ = self.said("got 2 shampoo", dict(item_id="shampoo", item_name="shampoo", base_unit="ml", quantity_text="2 shampoo"))
+        self.assertEqual(lines, ["✓ Shampoo: bought 2 packs × 500 ml (1 L)."])
+
+    def test_a_pack_word_in_the_sentence_needs_no_question(self):
+        self.add_item("eggs", "Eggs", "piece", pack_size=10, pack_size_set_at=AT)
+        lines, _, _ = self.said("got 3 boxes of eggs", dict(item_id="eggs", item_name="eggs", base_unit="piece", quantity_text="3 boxes"))
+        self.assertEqual(lines, ["✓ Eggs: bought 3 packs × 10 pieces (30 pieces)."])
+
     def test_format_and_free_text_entries_in_one_message_get_their_own_keys(self):
         self.add_toilet_paper()
         both = entries("+ toilet paper 2x10") + ai.ground_free_text(

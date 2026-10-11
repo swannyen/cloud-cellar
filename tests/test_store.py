@@ -83,6 +83,8 @@ class StoreTest(unittest.TestCase):
             "pk": "STORE", "sk": "don-don-donki", "store_id": "don-don-donki", "name": "Don Don Donki",
             "aliases": [], "last_used_at": "2026-10-09T10:00:00Z",
         }])
+        store.delete_store("don-don-donki")
+        self.assertEqual(store.list_stores(), [])
 
     def test_taught_unit_words(self):
         self.assertEqual(store.list_units(), {})
@@ -90,6 +92,8 @@ class StoreTest(unittest.TestCase):
         store.save_unit("ctn", "carton", "Jun")
         self.assertEqual(store.list_units(), {"sticks": "pcs", "ctn": "carton"})
         self.assertEqual(self.table.rows[("UNIT", "sticks")]["added_by"], "Mei")
+        store.delete_unit("sticks")
+        self.assertEqual(store.list_units(), {"ctn": "carton"})
 
     def test_taught_brands(self):
         self.assertEqual(store.list_brands(), [])
@@ -97,6 +101,8 @@ class StoreTest(unittest.TestCase):
         store.save_brand("royal umbrella", "Royal Umbrella", "Jun")
         self.assertEqual(store.list_brands(), ["KANS", "Royal Umbrella"])
         self.assertEqual(self.table.rows[("BRAND", "kans")]["added_by"], "Mei")
+        store.delete_brand("kans")
+        self.assertEqual(store.list_brands(), ["Royal Umbrella"])
 
     def test_pending_confirmations_live_for_a_week(self):
         before = int(time.time())

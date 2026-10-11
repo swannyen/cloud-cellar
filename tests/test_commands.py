@@ -1,4 +1,5 @@
-"""Command tests: /listitems, /items, /undo, /alias, /set, /unit, /brand, /listbrands, /stats, /help, /ping."""
+"""Command tests: /listitems, /list, /items, /undo, /alias, /rename, /set, /unit, /brand, /listbrands, /forget,
+/stats, /help, /ping."""
 import unittest
 from unittest import mock
 
@@ -7,6 +8,7 @@ from fakes import FakeTable, entries, no_ai
 import ai
 import apply
 import commands
+import matcher
 import replies
 import store
 
@@ -49,7 +51,7 @@ class SimpleCommandTest(CommandTestCase):
         self.assertEqual(commands.handle("/start@bettynuffbot", MEI, NOW), replies.HELP)
 
     def test_commands_from_later_phases_say_so(self):
-        for command in ("/list", "/status", "/price detergent", "/fx MYR", "/expiring"):
+        for command in ("/status", "/price detergent", "/fx MYR", "/expiring"):
             self.assertEqual(commands.handle(command, MEI, NOW), replies.NOT_AVAILABLE_YET)
 
     def test_unknown_command_stays_silent(self):
@@ -77,6 +79,86 @@ class SimpleCommandTest(CommandTestCase):
             "dish-soap — Dishwashing liquid (ml): out",
             "toilet-paper — Toilet paper (roll, pack of 10 rolls): ok, 20 rolls (2 packs)",
         ]))
+
+
+class ListTest(CommandTestCase):
+    """/list <item>: one item in detail. /list on its own is kept for the shopping list (Phase 2)."""
+
+    def body_wash(self):
+        self.add_item("body-wash", "Body wash", "ml", ["shower gel"])
+        for brand in ("Shokubutsu", "Lux"):
+            commands.handle(f"/brand {brand}", MEI, NOW)
+        self.record("+ shokubutsu body wash 2x800ml", update_id=1, at="2026-10-01T08:00:00Z")
+        self.record("+ lux body wash 1x800ml", update_id=2, at="2026-10-03T08:00:00Z")
+        self.record("+ body wash 1", update_id=3, at="2026-10-05T08:00:00Z")
+        self.record("- body wash 400ml", update_id=4, at="2026-10-07T08:00:00Z")
+
+    def test_without_an_item_it_says_how_to_use_it(self):
+        self.assertEqual(commands.handle("/list", MEI, NOW), replies.LIST_USAGE)
+        self.assertEqual(commands.handle("/list@bettynuffbot  ", MEI, NOW), replies.LIST_USAGE)
+
+    def test_what_is_left_is_split_by_brand_with_the_oldest_used_first(self):
+        self.body_wash()
+        self.assertEqual(commands.handle("/list body wash", MEI, NOW), "\n".join([
+            "Body wash (body-wash)",
+            "Left: 2.8 L (3.5 packs)",
+            "Pack size: 800 ml",
+            "By brand, if the oldest is used first:",
+            "• Shokubutsu — 1.2 L",
+            "• Lux — 800 ml",
+            "• no brand — 800 ml",
+            "Also called: shower gel",
+        ]))
+
+    def test_a_used_line_that_names_a_brand_comes_off_that_brand(self):
+        self.body_wash()
+        self.record("- lux body wash 800ml", update_id=5, at="2026-10-08T08:00:00Z")
+        self.assertEqual(commands.handle("/list shower gel", MEI, NOW), "\n".join([
+            "Body wash (body-wash)",
+            "Left: 2 L (2.5 packs)",
+            "Pack size: 800 ml",
+            "By brand, if the oldest is used first:",
+            "• Shokubutsu — 1.2 L",
+            "• no brand — 800 ml",
+            "Bought before: Lux",
+            "Also called: shower gel",
+        ]))
+
+    def test_item_can_be_named_by_id_name_alias_or_a_close_spelling(self):
+        for target in ("toilet-paper", "Toilet Paper", "toilet papers", "toilet papr"):
+            with self.subTest(target=target):
+                self.assertEqual(commands.handle(f"/list {target}", MEI, NOW), "Toilet paper (toilet-paper)\nLeft: not counted yet")
+        self.assertEqual(commands.handle("/list dish soap", MEI, NOW),
+                         "Dishwashing liquid (dish-soap)\nLeft: not counted yet\nAlso called: dish soap")
+
+    def test_stock_with_no_brand_on_any_entry(self):
+        self.record("+ toilet paper 2x10")
+        self.assertEqual(commands.handle("/list toilet paper", MEI, NOW),
+                         "Toilet paper (toilet-paper)\nLeft: 20 rolls (2 packs)\nPack size: 10 rolls\nBrand: not noted")
+
+    def test_running_low_and_out(self):
+        commands.handle("/brand kleenex", MEI, NOW)
+        self.record("+ kleenex toilet paper 2x10", update_id=1, at="2026-10-09T08:00:00Z")
+        self.record("low toilet paper", update_id=2, at="2026-10-09T09:00:00Z")
+        self.assertEqual(commands.handle("/list toilet paper", MEI, NOW), "\n".join([
+            "Toilet paper (toilet-paper)",
+            "Left: 10 rolls (1 pack), running low",
+            "Pack size: 10 rolls",
+            "By brand, if the oldest is used first:",
+            "• kleenex — 10 rolls",
+        ]))
+        self.record("- toilet paper", update_id=3)
+        self.assertEqual(commands.handle("/list toilet paper", MEI, NOW),
+                         "Toilet paper (toilet-paper)\nLeft: none\nPack size: 10 rolls\nBought before: kleenex")
+
+    def test_unknown_item(self):
+        self.assertEqual(commands.handle("/list soy sauce", MEI, NOW), 'I don\'t track "soy sauce" yet. /items shows what I track.')
+
+    def test_looking_changes_nothing(self):
+        self.record("+ toilet paper 2x10")
+        before = dict(self.table.rows)
+        commands.handle("/list toilet paper", MEI, NOW)
+        self.assertEqual(self.table.rows, before)
 
 
 class UndoTest(CommandTestCase):
@@ -203,6 +285,155 @@ class AliasTest(CommandTestCase):
         self.add_item("rice", "Rice", "g", [f"name {n}" for n in range(apply.MAX_ALIASES)])
         self.assertEqual(commands.handle("/alias beras = rice", MEI, NOW),
                          "Rice already has 30 other names, which is the most I keep.")
+
+
+class RenameTest(CommandTestCase):
+    def test_item_is_renamed_and_keeps_its_id_and_entries(self):
+        self.record("+ toilet paper 2x10")
+        self.assertEqual(
+            commands.handle("/rename toilet paper = bathroom tissue", MEI, NOW),
+            'Renamed Toilet paper to Bathroom tissue (ID still toilet-paper). "toilet paper" no longer means it. '
+            "To keep that name too: /alias toilet paper = bathroom tissue",
+        )
+        item = store.get_item("toilet-paper")
+        self.assertEqual((item["name"], item["stock_est"], item["pack_size"]), ("Bathroom tissue", 20, 10))
+        self.record("+ bathroom tissue 1", update_id=2)  # no_ai would raise if the matcher needed help
+        self.assertEqual(store.get_item("toilet-paper")["stock_est"], 30)
+        self.assertIsNone(matcher.match("toilet paper", store.list_items()))
+
+    def test_the_suggested_alias_brings_the_old_name_back(self):
+        commands.handle("/rename toilet-paper = bathroom tissue", MEI, NOW)
+        self.assertEqual(commands.handle("/alias toilet paper = bathroom tissue", MEI, NOW),
+                         'Got it: "toilet paper" now means Bathroom tissue.')
+
+    def test_new_name_is_kept_as_typed_with_a_capital_first(self):
+        self.add_item("kn95-masks", "Kn95 masks", "piece")
+        # Only the capitals change, so the old spelling still matches and there is nothing to warn about.
+        self.assertEqual(commands.handle("/rename@bettynuffbot kn95 masks =  KN95   masks ", MEI, NOW),
+                         "Renamed Kn95 masks to KN95 masks (ID still kn95-masks).")
+        self.assertEqual(store.get_item("kn95-masks")["name"], "KN95 masks")
+
+    def test_a_name_that_was_one_of_its_aliases_is_not_kept_as_both(self):
+        commands.handle("/alias mama lemon = dish soap", MEI, NOW)
+        self.assertIn("Renamed Dishwashing liquid to Dish soap", commands.handle("/rename dish-soap = dish soap", MEI, NOW))
+        item = store.get_item("dish-soap")
+        self.assertEqual((item["name"], item["aliases"]), ("Dish soap", ["mama lemon"]))
+
+    def test_another_items_name_or_alias_cannot_be_taken(self):
+        for name in ("Dishwashing liquids", "dish soap"):
+            with self.subTest(name=name):
+                taken = name[:1].upper() + name[1:]
+                self.assertEqual(commands.handle(f"/rename toilet paper = {name}", MEI, NOW),
+                                 f'"{taken}" already means Dishwashing liquid, so I\'ve left it alone.')
+        self.assertEqual(store.get_item("toilet-paper")["name"], "Toilet paper")
+
+    def test_the_name_it_already_has(self):
+        self.assertEqual(commands.handle("/rename toilet-paper = Toilet paper", MEI, NOW), "It is already called Toilet paper.")
+
+    def test_unknown_item(self):
+        self.assertEqual(commands.handle("/rename soy sauce = shoyu", MEI, NOW),
+                         'I don\'t track "soy sauce" yet. /items shows what I track.')
+
+    def test_usage_is_shown_for_anything_else(self):
+        for text in ("/rename", "/rename toilet paper", "/rename = tissue", "/rename toilet paper =", "/rename toilet paper = !!!",
+                     "/rename toilet paper = a = b", "/rename toilet paper = " + "x" * 61):
+            with self.subTest(text=text):
+                self.assertEqual(commands.handle(text, MEI, NOW), replies.RENAME_USAGE)
+
+    def test_undo_names_the_item_as_it_is_called_now(self):
+        self.record("+ toilet paper 2x10")
+        commands.handle("/rename toilet paper = bathroom tissue", MEI, NOW)
+        self.assertEqual(commands.handle("/undo", MEI, NOW), "Undid: Bathroom tissue, bought 2 packs × 10 rolls (20 rolls).")
+
+
+class ForgetTest(CommandTestCase):
+    """/forget takes back what was taught. It never removes an entry."""
+
+    def test_alias_is_forgotten(self):
+        self.assertEqual(commands.handle("/forget alias Dish Soaps", MEI, NOW), 'Forgot "dish soap". It used to mean Dishwashing liquid.')
+        self.assertEqual(self.aliases("dish-soap"), [])
+        self.assertIsNone(matcher.match("dish soap", store.list_items()))
+
+    def test_an_items_own_name_is_not_something_to_forget(self):
+        self.assertEqual(commands.handle("/forget alias toilet paper", MEI, NOW),
+                         "Toilet paper is what the item is called, so there is nothing to forget. "
+                         "To change it: /rename toilet paper = <new name>")
+
+    def test_alias_nobody_taught(self):
+        self.assertEqual(commands.handle("/forget alias loo roll", MEI, NOW),
+                         '"loo roll" isn\'t another name for anything I track. /list <item> shows an item\'s other names.')
+
+    def test_brand_is_forgotten_as_taught_and_on_the_entries_that_carry_it(self):
+        self.add_item("facial-masks", "Facial masks", "piece")
+        commands.handle("/brand kans", MEI, NOW)
+        self.record("+ kans facial masks 2pcs $1.96\n+ facial masks 5pcs", update_id=1)
+        self.record("+ kans toilet paper 2x10", update_id=2)
+        self.assertEqual(commands.handle("/forget brand KANS", MEI, NOW),
+                         'Forgot the brand "KANS". It was on 2 entries (Facial masks, Toilet paper). '
+                         "Those entries stay, without the brand.")
+        self.assertEqual(store.list_brands(), [])
+        self.assertEqual(commands.handle("/listbrands", MEI, NOW), replies.NO_BRANDS)
+        # The entries are as they were, apart from the brand.
+        kept = [("brand" in event, event["qty"], event.get("total_price")) for event in store.list_events("facial-masks")]
+        self.assertEqual(kept, [(False, 2, 1.96), (False, 5, None)])
+        item = store.get_item("facial-masks")
+        self.assertEqual((item["stock_est"], "brands" in item), (7, False))
+        # So "kans" at the front of a phrase is no longer taken off it.
+        self.assertEqual(matcher.match_phrase("kans facial masks", store.list_items(), store.list_brands()),
+                         (None, "kans facial masks", None))
+
+    def test_brand_known_only_from_an_entry_can_be_forgotten_too(self):
+        store.put_event("dish-soap", f"{AT}#9#0", {"action": "bought", "qty": 1000, "brand": "Mama Lemon", "at": AT})
+        apply.refresh_item(store.get_item("dish-soap"))
+        self.assertEqual(commands.handle("/forget brand mama lemon", MEI, NOW),
+                         'Forgot the brand "mama lemon". It was on 1 entry (Dishwashing liquid). '
+                         "That entry stays, without the brand.")
+        self.assertNotIn("brands", store.get_item("dish-soap"))
+
+    def test_taught_brand_that_is_on_no_entry(self):
+        commands.handle("/brand Darlie", MEI, NOW)
+        self.assertEqual(commands.handle("/forget brand darlie", MEI, NOW), 'Forgot the brand "darlie". It wasn\'t on any entry.')
+        self.assertEqual(store.list_brands(), [])
+
+    def test_brand_nobody_taught(self):
+        self.assertEqual(commands.handle("/forget brand kans", MEI, NOW),
+                         'I don\'t know "kans" as a brand. /listbrands shows the ones I know.')
+
+    def test_taught_unit_word_is_forgotten(self):
+        commands.handle("/unit sticks = pcs", MEI, NOW)
+        self.assertEqual(commands.handle("/forget unit Sticks", MEI, NOW), 'Forgot "sticks" as a unit word. It used to mean pcs.')
+        self.assertEqual(store.list_units(), {})
+
+    def test_built_in_and_unknown_unit_words(self):
+        self.assertEqual(commands.handle("/forget unit kg", MEI, NOW), '"kg" is built in, so I can\'t forget it.')
+        self.assertEqual(commands.handle("/forget unit bananas", MEI, NOW), 'I don\'t know "bananas" as a unit word.')
+
+    def test_saved_store_is_forgotten_and_entries_keep_it(self):
+        self.record("+ toilet paper 2x10 $12 @giant")
+        self.assertEqual([saved["name"] for saved in store.list_stores()], ["Giant"])
+        self.assertEqual(commands.handle("/forget store GIANT", MEI, NOW), "Forgot the store Giant. Entries that name it keep it.")
+        self.assertEqual(store.list_stores(), [])
+        self.assertEqual(store.list_events("toilet-paper")[0]["store"], "Giant")
+
+    def test_built_in_and_unknown_stores(self):
+        self.assertEqual(commands.handle("/forget store ntuc", MEI, NOW), '"FairPrice" is built in, so I can\'t forget it.')
+        self.assertEqual(commands.handle("/forget store giant", MEI, NOW), 'I don\'t have "giant" as a saved store.')
+
+    def test_nothing_is_ever_removed_from_the_entries(self):
+        commands.handle("/brand kans", MEI, NOW)
+        self.record("+ kans toilet paper 2x10 $12 @giant")
+        commands.handle("/alias loo roll = toilet paper", MEI, NOW)
+        for text in ("/forget alias loo roll", "/forget brand kans", "/forget store giant"):
+            commands.handle(text, MEI, NOW)
+        event, = store.list_events("toilet-paper")
+        self.assertEqual((event["qty"], event["total_price"], event["store"]), (20, 12, "Giant"))
+        self.assertEqual(store.get_item("toilet-paper")["stock_est"], 20)
+
+    def test_usage_is_shown_for_anything_else(self):
+        for text in ("/forget", "/forget alias", "/forget brand   ", "/forget everything", "/forget item toilet paper"):
+            with self.subTest(text=text):
+                self.assertEqual(commands.handle(text, MEI, NOW), replies.FORGET_USAGE)
+        self.assertIn("It used to mean Dishwashing liquid", commands.handle("/Forget@bettynuffbot  ALIAS   dish soap", MEI, NOW))
 
 
 class SetPackTest(CommandTestCase):

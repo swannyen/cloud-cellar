@@ -98,6 +98,14 @@ LOG_WORDS = (
 )
 _LOG_SIGNS = re.compile(r"[\d$]|\b(?:" + "|".join(LOG_WORDS) + r")\b", re.IGNORECASE)
 
+# A price next to one of these is one total for everything in the message ("$31.40 total").
+_TOTAL_WORDS = re.compile(
+    r"\b(?:total|altogether|all together|in all|for everything|for both|for the lot|combined)\b|一共|总共"
+)
+_TOTAL_TOKEN = re.compile(r"\$?\d+(?:\.\d+)?|[^\W\d_]+|[,;:()]|\.(?!\d)")  # a number, a word, or the end of a clause
+TOTAL_REACH = 4  # how many words may lie between the price and the word
+PRICED_ACTIONS = ("bought", "price_check")  # the entries a price can belong to
+
 # Bump when FREE_TEXT_PROMPT changes, so logged results can be tied to a prompt.
 FREE_TEXT_PROMPT_VERSION = 7
 
@@ -338,7 +346,8 @@ def ground_free_text(events, text, stores=(), units=None) -> list:
     for structured.parse_line. The store comes from code where code can read
     it. A store, price or quantity the model gave that isn't written in the
     text is dropped and named in the entry's "missed", so the reply can say so.
-    The quantity words are then read by the format's own rules.
+    A total for several items (see shared_totals) is dropped too. The quantity
+    words are then read by the format's own rules.
     """
     stores_read = [
         found for line in text.splitlines() if (found := structured.find_store(line, stores))[0]
@@ -346,12 +355,15 @@ def ground_free_text(events, text, stores=(), units=None) -> list:
     # A price counts once for each time it is written: one total put on three items backs none of them.
     written = Counter(round(number, 2) for number in structured.numbers_in(text))
     used = Counter(round(event["total_price"], 2) for event in events if event["total_price"] is not None)
+    shared = shared_totals(events, text)
     entries = []
     for event in events:
         missed = []
         store, store_is_new = _grounded_store(event["store"], text, stores_read, stores, missed)
         price = event["total_price"]
-        if price is not None and not 0 < used[round(price, 2)] <= written[round(price, 2)]:
+        if price is not None and round(price, 2) in shared:
+            price = None  # not "missed": the reply says once that the total covers several items
+        elif price is not None and not 0 < used[round(price, 2)] <= written[round(price, 2)]:
             price = None
             missed.append("price")
         quantity = None
@@ -382,6 +394,46 @@ def ground_free_text(events, text, stores=(), units=None) -> list:
             "free_text": True,
         })
     return entries
+
+
+def shared_totals(events, text) -> list:
+    """The prices in a message that are one total for several items ("eggs, milk and rice. $31.40 total").
+
+    events are what the model returned for the text. Nobody can say what each
+    item cost, so no entry keeps such a price. With one purchase in the
+    message, a total is just that purchase's price: [].
+    """
+    if sum(event["action"] in PRICED_ACTIONS for event in events) < 2:
+        return []
+    totals = []
+    for line in text.lower().splitlines():
+        for word in _TOTAL_WORDS.finditer(line):
+            after = _nearest_number(_TOTAL_TOKEN.findall(line[word.end():]))
+            before = _nearest_number(reversed(_TOTAL_TOKEN.findall(line[:word.start()])))
+            # "eggs $5, total $17": the word goes with one number. That is the one in its own
+            # clause, then the nearest, then the one written as a price, then the one after it.
+            numbers = [found for found in (after, before) if found]
+            if numbers:
+                number = min(numbers, key=lambda found: found[:3])[3]
+                amount = round(float(number.lstrip("$")), 2)
+                if amount not in totals:
+                    totals.append(amount)
+    return totals
+
+
+def _nearest_number(tokens):
+    """(whether punctuation lies between, words in between, not written as a price, the number), or None."""
+    words, punctuated = 0, False
+    for token in tokens:
+        if token[-1].isdigit():
+            return punctuated, words, not (token.startswith("$") or "." in token), token
+        if not token[0].isalpha():
+            punctuated = True
+        elif words == TOTAL_REACH:
+            return None
+        else:
+            words += 1
+    return None
 
 
 def _grounded_store(named, text, stores_read, stores, missed):

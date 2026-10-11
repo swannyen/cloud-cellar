@@ -22,8 +22,9 @@ and read the quantity words by the format's rules.
 An expected event names "action" and either "item_id" (a known item) or "new"
 (keywords, one of which must appear in the new item's name, plus its
 "base_unit"). The quantity is "qty" (a total in base units, when the message
-gives sizes), "packs" (a bare pack count), or left out (no quantity). Other
-fields left out are expected to be null. A value of {"any": [...]} accepts any
+gives sizes), "packs" (a count of packs, bottles, bags and the like), "count"
+(a number that doesn't say what it counts, which the bot asks about), or left
+out (no quantity). Other fields left out are expected to be null. A value of {"any": [...]} accepts any
 of the listed values. An optional "known" lists the item IDs the bot knows for
 that message (default: all of them), which is how the "product the bot has
 never seen" cases are written.
@@ -141,14 +142,17 @@ def _compare(want, got) -> dict:
 
 
 def _same_quantity(want, quantity) -> bool:
-    """"qty" is a total in base units, "packs" a bare pack count, neither means no quantity."""
+    """"qty" is a total in base units, "packs" a pack count, "count" a number that
+    doesn't say what it counts. None of them means no quantity."""
     if "qty" in want:
         if not quantity or quantity["kind"] == "packs":
             return False
         total = quantity["amount"] if quantity["kind"] == "amount" else quantity["packs"] * quantity["size"]
         return _matches(want["qty"], total, _same_number)
-    if "packs" in want:
-        return bool(quantity) and quantity["kind"] == "packs" and _matches(want["packs"], quantity["packs"], _same_number)
+    for key, bare in (("packs", False), ("count", True)):
+        if key in want:
+            return (bool(quantity) and quantity["kind"] == "packs" and quantity.get("bare", False) == bare
+                    and _matches(want[key], quantity["packs"], _same_number))
     return quantity is None
 
 
@@ -184,6 +188,8 @@ def oracle_output(fixture, items):
             quantity = {"kind": "amount", "amount": _first(want["qty"]), "unit": None}
         elif "packs" in want:
             quantity = {"kind": "packs", "packs": _first(want["packs"])}
+        elif "count" in want:
+            quantity = {"kind": "packs", "packs": _first(want["count"]), "bare": True}
         entries.append({
             "action": want["action"],
             "item_id": item_id,
