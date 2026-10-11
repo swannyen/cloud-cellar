@@ -20,6 +20,8 @@ Globals:
         PARAM_PREFIX: /bettynuffbot
         ALLOWED_CHAT_IDS: !Ref AllowedChatIds
         CLAUDE_MODEL: claude-haiku-5-5
+        FREE_TEXT_AI: "on"   # "off" answers free-text lines with the format hint instead of an AI call
+        HOME_CURRENCY: SGD
 
 Resources:
   StockTable:
