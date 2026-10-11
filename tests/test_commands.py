@@ -1,4 +1,4 @@
-"""Command tests: /items, /undo, /alias, /set, /unit, /brand, /stats, /help, /ping."""
+"""Command tests: /items, /undo, /alias, /set, /unit, /brand, /listbrands, /stats, /help, /ping."""
 import unittest
 from unittest import mock
 
@@ -285,12 +285,45 @@ class BrandCommandTest(CommandTestCase):
         self.assertEqual(commands.handle("/brand", MEI, NOW), replies.BRAND_USAGE)
         commands.handle("/brand kans", MEI, NOW)
         commands.handle("/brand Darlie", MEI, NOW)
-        self.assertEqual(commands.handle("/brand", MEI, NOW), "Brands I know: Darlie, kans. Add one with /brand <name>.")
+        self.assertEqual(commands.handle("/brand", MEI, NOW),
+                         "Brands:\n• Darlie — not on any entry yet\n• kans — not on any entry yet")
 
     def test_usage_is_shown_for_names_that_cannot_be_brands(self):
         for text in ("/brand !!!", "/brand " + "x" * 31):
             with self.subTest(text=text):
                 self.assertEqual(commands.handle(text, MEI, NOW), replies.BRAND_USAGE)
+
+
+class ListBrandsTest(CommandTestCase):
+    def test_no_brands_yet(self):
+        self.assertEqual(commands.handle("/listbrands", MEI, NOW), replies.NO_BRANDS)
+
+    def test_brands_are_listed_with_the_items_they_were_bought_as(self):
+        self.add_item("facial-masks", "Facial masks", "piece")
+        self.add_item("sleeping-masks", "Sleeping masks", "piece")
+        for brand in ("kans", "Darlie", "Kleenex"):
+            commands.handle(f"/brand {brand}", MEI, NOW)
+        self.record("+ kans facial masks 2pcs\n+ Kans sleeping masks 1pc\n+ kleenex toilet paper 2x10")
+        self.assertEqual(commands.handle("/listbrands@bettynuffbot", MEI, NOW), "\n".join([
+            "Brands:",
+            "• Darlie — not on any entry yet",
+            "• kans — Facial masks, Sleeping masks",
+            "• Kleenex — Toilet paper",
+        ]))
+
+    def test_a_brand_only_ever_seen_on_an_entry_is_listed_too(self):
+        # Brands also arrive with free-text entries, without anyone teaching them.
+        store.put_event("dish-soap", f"{AT}#9#0", {"action": "bought", "qty": 1000, "brand": "Mama Lemon", "at": AT})
+        apply.refresh_item(store.get_item("dish-soap"))
+        self.assertEqual(commands.handle("/listbrands", MEI, NOW), "Brands:\n• Mama Lemon — Dishwashing liquid")
+
+    def test_undoing_the_only_entry_with_a_brand_takes_it_off_the_item(self):
+        commands.handle("/brand kleenex", MEI, NOW)
+        self.record("+ toilet paper 2x10", update_id=1, at="2026-10-09T08:00:00Z")
+        self.record("+ kleenex toilet paper 1x10", update_id=2)
+        self.assertIn("• kleenex — Toilet paper", commands.handle("/listbrands", MEI, NOW))
+        commands.handle("/undo", MEI, NOW)
+        self.assertEqual(commands.handle("/listbrands", MEI, NOW), "Brands:\n• kleenex — not on any entry yet")
 
 
 class StatsTest(CommandTestCase):

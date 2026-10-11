@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Recompute every item's cached state (stock, status, pack size) from its events.
+"""Recompute every item's cached state (stock, status, pack size, brands) from its events.
 
 Run it once after deploying a change to how stock is counted, so /items is
 right straight away instead of item by item as new entries arrive. Events are
@@ -23,18 +23,16 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import live_table  # noqa: E402  (also puts src/ on the path)
 
 import apply  # noqa: E402
-import model  # noqa: E402
 import replies  # noqa: E402
 import store  # noqa: E402
 
-SHOWN = ("status", "stock_est", "pack_size")
+SHOWN = ("status", "stock_est", "pack_size", "brands")
 
 
 def recomputed(item, events) -> dict:
     """The item as apply.refresh_item would leave it, without saving anything."""
     after = copy.deepcopy(item)
-    apply._update_pack_size(after, events)
-    after.update(model.replay(events, after.get("pack_size")))
+    apply.recompute(after, events)
     return after
 
 
@@ -45,6 +43,7 @@ def describe(item) -> str:
         str(item.get("status")),
         replies.quantity(stock, unit) if stock is not None else "stock unknown",
         f"pack of {replies.quantity(pack, unit)}" if pack else "no pack size",
+        "brands: " + ", ".join(item["brands"]) if item.get("brands") else "no brands",
     ])
 
 

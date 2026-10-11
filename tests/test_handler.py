@@ -325,6 +325,52 @@ class FormatRouteTest(HandlerTestCase):
         handler.logger.exception.assert_called_once()
 
 
+class EntryCommandTest(HandlerTestCase):
+    """/add, /bought and /used are the format written as commands: "+" and "-" under other names."""
+
+    def setUp(self):
+        super().setUp()
+        self.add_item("toilet-paper", "Toilet paper", "roll")
+        self.add_item("dish-soap", "Dishwashing liquid", "ml", ["dish soap"])
+
+    def test_add_and_bought_record_a_purchase_like_the_plus_sign(self):
+        self.call(message_update(update_id=1, text="+ toilet paper 2x10 $12.90 @fairprice"))
+        self.call(message_update(update_id=2, text="/add toilet paper 2x10 $12.90 @fairprice"))
+        self.call(message_update(update_id=3, text="/bought@bettynuffbot toilet paper 2x10 $12.90 @fairprice"))
+        self.assertEqual(self.replies(), ["✓ Toilet paper: bought 2 packs × 10 rolls (20 rolls) for $12.90 at FairPrice ($0.65/roll)."] * 3)
+        events = store.list_events("toilet-paper")
+        self.assertEqual([event["qty"] for event in events], [20, 20, 20])
+        self.assertEqual(events[1]["raw_text"], "/add toilet paper 2x10 $12.90 @fairprice")
+        self.assertEqual(self.stats(), {"lines_structured": 3})
+        self.match_item.assert_not_called()
+
+    def test_used_marks_finished_like_the_minus_sign(self):
+        self.call(message_update(text="/used dish soap"))
+        self.assertEqual(self.replies(), ["✓ Dishwashing liquid: marked finished."])
+        self.assertEqual(store.get_item("dish-soap")["status"], "out")
+
+    def test_command_with_nothing_after_it_says_how_to_use_it(self):
+        for update_id, text in enumerate(["/add", "/used", "/bought@bettynuffbot"]):
+            self.call(message_update(update_id=update_id, text=text))
+        self.assertEqual(self.replies(), [replies.ENTRY_COMMAND_USAGE] * 3)
+        self.assertEqual(self.table.keys("EVT#"), [])
+
+    def test_command_that_cannot_be_read_gets_the_format_hint(self):
+        self.call(message_update(text="/add 2 3"))
+        self.assertEqual(self.replies(), [replies.FORMAT_HINT])
+
+    def test_more_lines_can_follow_in_the_same_message(self):
+        self.call(message_update(text="/add toilet paper 1x10\n/used dish soap\n+ toilet paper 1x10"))
+        self.assertEqual(self.replies(), ["✓ Toilet paper: bought 1 pack of 10 rolls.\n✓ Dishwashing liquid: marked finished.\n"
+                                          "✓ Toilet paper: bought 1 pack of 10 rolls."])
+
+    def test_other_commands_are_not_taken_for_entries(self):
+        self.call(message_update(update_id=1, text="/listbrands"))
+        self.call(message_update(update_id=2, text="/address 5 rice road"))
+        self.assertEqual(self.replies(), [replies.NO_BRANDS])
+        self.assertEqual(self.table.keys("EVT#"), [])
+
+
 class NoKeywordTest(HandlerTestCase):
     """A line with no keyword is still a purchase if it has a price and an item known by exactly that name."""
 

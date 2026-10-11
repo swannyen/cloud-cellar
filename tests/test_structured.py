@@ -27,10 +27,10 @@ def entry(action, phrase, quantity=None, price=None, store=None, store_is_new=Fa
 
 
 def read(line, **context):
-    """parse_line without the "raw" key, to keep expectations short."""
+    """parse_line without the "raw" and "explicit" keys, to keep expectations short."""
     result = structured.parse_line(line, **context)
     if isinstance(result, dict):
-        result = {key: value for key, value in result.items() if key != "raw"}
+        result = {key: value for key, value in result.items() if key not in ("raw", "explicit")}
     return result
 
 
@@ -59,13 +59,36 @@ class KeywordTest(unittest.TestCase):
         self.assertEqual(read("add toilet paper 2x10 $12.90 @fairprice"),
                          entry("bought", "toilet paper", packs_of(2, 10), 12.9, "FairPrice"))
 
-    def test_lines_that_open_with_a_symbol(self):
-        for line in ("+ rice", "-dish soap", "  ? rice 5kg $5", "+"):
+    def test_symbols_and_entry_commands_are_the_format_used_on_purpose(self):
+        for line in ("+ rice", "-dish soap", "  ? rice 5kg $5", "+", "/add rice", "/used rice", "/Bought@bettynuffbot rice"):
             with self.subTest(line=line):
-                self.assertTrue(structured.starts_with_symbol(line))
-        for line in ("bought rice", "add rice", "have you eaten", "rice + beans", ""):
+                self.assertTrue(structured.is_explicit(line))
+        for line in ("bought rice", "add rice", "have you eaten", "rice + beans", "", "/items", "/help add"):
             with self.subTest(line=line):
-                self.assertFalse(structured.starts_with_symbol(line))
+                self.assertFalse(structured.is_explicit(line))
+        self.assertTrue(structured.parse_line("+ rice")["explicit"])
+        self.assertTrue(structured.parse_line("/add rice")["explicit"])
+        self.assertFalse(structured.parse_line("add rice")["explicit"])
+
+    def test_entry_commands_read_like_their_symbols(self):
+        self.assertEqual(read("/add toilet paper 2x10 $12.90 @fairprice"), read("+ toilet paper 2x10 $12.90 @fairprice"))
+        self.assertEqual(read("/bought toilet paper 2x10 $12.90 @fairprice"), read("+ toilet paper 2x10 $12.90 @fairprice"))
+        self.assertEqual(read("/used dish soap"), read("- dish soap"))
+        self.assertEqual(read("/ADD@bettynuffbot rice 5kg $12 from ntuc"),
+                         entry("bought", "rice", amount(5000, "g"), 12, "FairPrice"))
+        # What was typed is kept, not the symbol it stands for.
+        self.assertEqual(structured.parse_line("/add  rice 5kg")["raw"], "/add rice 5kg")
+
+    def test_entry_commands_follow_the_same_rules_as_any_other_line(self):
+        self.assertIs(read("/add 2 3"), UNREADABLE)
+        for line in ("/add", "/used", "/bought@bettynuffbot"):
+            with self.subTest(line=line):
+                self.assertIsNone(read(line))        # nothing after it: the handler answers with how to use it
+                self.assertTrue(structured.is_entry_command(line))
+        for line in ("/items", "/address rice", "/adds rice", "add rice", "+ rice"):
+            with self.subTest(line=line):
+                self.assertFalse(structured.is_entry_command(line))
+        self.assertIsNone(read("/items rice"))
 
     def test_keywords_are_case_insensitive(self):
         self.assertEqual(read("BOUGHT rice"), entry("bought", "rice"))
@@ -392,7 +415,7 @@ class MessageTest(unittest.TestCase):
     def test_line_without_a_keyword_can_be_read_as_a_purchase(self):
         result = structured.parse_bought("facial masks  5 pcs 1.86 from taobao")
         self.assertEqual(result, {**entry("bought", "facial masks", amount(5, "piece"), 1.86, "Taobao"),
-                                  "raw": "facial masks 5 pcs 1.86 from taobao"})
+                                  "raw": "facial masks 5 pcs 1.86 from taobao", "explicit": False})
         self.assertIs(structured.parse_bought("2 3"), UNREADABLE)
 
     def test_numbers_in_text(self):

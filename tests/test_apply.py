@@ -400,6 +400,13 @@ class ItemResolutionTest(ApplyTestCase):
         self.assertEqual(self.table.keys("EVT#") + self.table.keys("USER#"), [])
         self.assertEqual(self.table.keys("ITEM"), [("ITEM", "toilet-paper")])
 
+    def test_entry_commands_always_get_an_answer_too(self):
+        self.ai_says(None, "")
+        for update_id, text in enumerate(["/add mama lemon 2x500ml", "/bought mama lemon", "/used mama lemon"]):
+            with self.subTest(text=text):
+                line, = self.lines(text, update_id=update_id)
+                self.assertIn('I don\'t know what "mama lemon" is', line)
+
     def test_word_keyword_chat_still_gets_no_answer(self):
         self.ai_says(None, "")
         for text in ("have you eaten 2", "last night was fun", "done with dinner", "add oil!"):

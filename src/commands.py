@@ -1,6 +1,7 @@
 """
 Slash commands (PLAN.md §8.4).
-Phase 1a: /items, /undo, /alias, /set, /unit, /brand, /stats, /help, /ping.
+Phase 1a: /items, /undo, /alias, /set, /unit, /brand, /listbrands, /stats, /help, /ping.
+(/add, /bought and /used are entries, not commands: handler.py sends them through the format parser.)
 """
 import re
 
@@ -35,6 +36,8 @@ def handle(text, sender, now):
         return _unit(args[0] if args else "", sender)
     if command == "/brand":
         return _brand(args[0] if args else "", sender)
+    if command == "/listbrands":
+        return _list_brands()
     if command == "/stats":
         month = apply.month_key(now)
         return replies.stats(month, store.get_stats(month))
@@ -144,7 +147,7 @@ def _brand(args, sender) -> str:
     name = " ".join(args.split())
     known = store.list_brands()
     if not name:
-        return replies.brands_list(known) if known else replies.BRAND_USAGE
+        return _list_brands() if known else replies.BRAND_USAGE
     brand_id = matcher.plain(name)
     if not brand_id or len(name) > MAX_BRAND_LENGTH:
         return replies.BRAND_USAGE
@@ -156,3 +159,14 @@ def _brand(args, sender) -> str:
         return replies.brand_already(name)
     store.save_brand(brand_id, name, sender["name"])
     return replies.brand_saved(name)
+
+
+def _list_brands() -> str:
+    """/listbrands: every brand on something we have logged, and every brand taught with /brand."""
+    brands = {}  # plain spelling -> [the brand as written, the items it is on]
+    for item in store.list_items():
+        for brand in item.get("brands", []):
+            brands.setdefault(matcher.plain(brand), [brand, []])[1].append(item["name"])
+    for brand in store.list_brands():
+        brands.setdefault(matcher.plain(brand), [brand, []])
+    return replies.brands_list(brands.values())

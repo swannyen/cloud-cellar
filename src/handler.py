@@ -97,11 +97,14 @@ def _route(update, chat_id):
     update_id = update["update_id"]
     sender = {"id": sender.get("id", 0), "name": sender.get("first_name") or "Someone"}
     rows = []
-    if text.startswith("/"):
+    if text.startswith("/") and not structured.is_entry_command(text):
         logger.info("update %s: command %s", update_id, text.split()[0].split("@")[0][:20])
         reply = commands.handle(text, sender, now=int(time.time()))
     else:
+        # Chat, or /add, /bought and /used, which are the format written as commands.
         reply, rows = _handle_chat(update_id, text, sender, message.get("date") or int(time.time()))
+        if not reply and text.startswith("/"):
+            reply = replies.ENTRY_COMMAND_USAGE  # "/add" with nothing after it
     if reply:
         with_buttons = {"buttons": rows} if rows else {}
         telegram_api.send_message(chat_id, reply, reply_to=message.get("message_id"), **with_buttons)

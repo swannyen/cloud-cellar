@@ -40,7 +40,7 @@ def apply_entries(entries, *, items, sender, update_id, at, brands=()) -> tuple:
     items is the tracked-item list; items created here are added to it. brands
     are the names taught with /brand. at is the event time as an ISO UTC
     string. Nothing is recorded for an entry whose phrase isn't a household
-    product (it gets a reply only if the line began with "+", "-" or "?"), or
+    product (it gets a reply only if the line began with "+", "-", "?" or an entry command), or
     whose quantity can't be worked out without guessing (the reply asks).
     """
     lines, buttons, counts = [], [], Counter()
@@ -58,8 +58,8 @@ def apply_entries(entries, *, items, sender, update_id, at, brands=()) -> tuple:
             counts["ai_match_calls"] += 1
         if item is None:
             counts["lines_rejected"] += 1
-            # "have you eaten" is chat and gets no reply, but "+ ..." was meant as an entry: say it wasn't taken.
-            if structured.starts_with_symbol(entry["raw"]):
+            # "have you eaten" is chat and gets no reply, but "+ ..." or "/add ..." was meant as an entry.
+            if entry.get("explicit"):
                 lines.append(replies.not_a_product(entry["phrase"]))
             continue
         guessed = entry["phrase"] if how in GUESSES else None
@@ -81,7 +81,6 @@ def apply_entries(entries, *, items, sender, update_id, at, brands=()) -> tuple:
         remember_for_undo(item, record, sk)
         if entry.get("store_is_new"):
             store.save_store(slugify(entry["store"]), entry["store"], at)
-        _remember_brand(item, record["brand"])
         refresh_item(item)
         lines.append(replies.event_line(
             item, record, created=how == "new", read_from=guessed, missed=entry.get("missed", ())
@@ -105,10 +104,16 @@ def refresh_item(item) -> bool:
     if not events:
         store.delete_item(item["item_id"])
         return False
-    _update_pack_size(item, events)
-    item.update(model.replay(events, item.get("pack_size")))
+    recompute(item, events)
     store.save_item(item)
     return True
+
+
+def recompute(item, events):
+    """Work out everything cached on an item from its events: pack size, brands, stock and status."""
+    _update_pack_size(item, events)
+    _update_brands(item, events)
+    item.update(model.replay(events, item.get("pack_size")))
 
 
 def learn_alias(item, phrase) -> bool:
@@ -317,12 +322,20 @@ def remember_for_undo(item, event, sk):
     })
 
 
-def _remember_brand(item, brand):
-    """Keep brands seen on an item, so the matcher can drop them from the front of a phrase."""
-    brands = item.get("brands", [])
-    known = {matcher.normalise(known) for known in brands}
-    if brand and matcher.normalise(brand) not in known and len(brands) < MAX_BRANDS:
-        item["brands"] = brands + [brand]
+def _update_brands(item, events):
+    """The brands recorded on the item's entries, oldest first.
+
+    The matcher drops them from the front of a phrase, and /listbrands shows them.
+    """
+    brands = []
+    for event in events:
+        brand = event.get("brand")
+        if brand and matcher.plain(brand) not in {matcher.plain(known) for known in brands}:
+            brands.append(brand)
+    if brands:
+        item["brands"] = brands[-MAX_BRANDS:]
+    else:
+        item.pop("brands", None)
 
 
 def _confirm_buttons(update_id, index, phrase) -> list:

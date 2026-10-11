@@ -5,8 +5,8 @@ import model
 
 HELP = """\
 One entry per line, starting with what happened:
-+ toilet paper 2x10 $12.90 @fairprice — bought (or: bought, buy, add)
-- dish soap — finished (or: done, finished, out)
++ toilet paper 2x10 $12.90 @fairprice — bought (or: bought, buy, add, /add, /bought)
+- dish soap — finished (or: done, finished, out, /used)
 low shampoo — on the last one (or: last)
 have rice 2x5kg — what's at home right now
 ? detergent 3kg $8.95 @shengsiong — price check (or: price)
@@ -20,11 +20,14 @@ $12.90 or a plain 12.90 is the total price. The store goes last: @giant, or from
 
 Commands:
 /items — what I'm tracking
+/add - log a bought item (or: /bought)
+/used - log a finished item
 /undo — remove your last entry (send it again to go back further)
 /alias loo roll = toilet paper — teach me a name
 /set toilet paper pack 10 — set a pack size
 /unit sticks = pcs — teach me a unit word
 /brand kans — teach me a brand
+/listbrands — brands on what we've bought
 /stats — how many lines needed AI this month"""
 
 FORMAT_HINT = "Didn't catch that. Try: + rice 5kg $12 @ntuc — or /help for all formats."
@@ -36,6 +39,8 @@ ALIAS_USAGE = "Use it like this: /alias loo roll = toilet paper"
 SET_USAGE = "Use it like this: /set toilet paper pack 10"
 UNIT_USAGE = "Use it like this: /unit sticks = pcs"
 BRAND_USAGE = "Use it like this: /brand kans"
+NO_BRANDS = "No brands yet. Teach me one with /brand <name>."
+ENTRY_COMMAND_USAGE = "Use it like this: /add rice 5kg $12 @ntuc — or /used dish soap"
 TOO_OLD_TO_CHANGE = "Too old to change — use /alias or /undo"
 ENTRY_WAS_UNDONE = "That entry was undone, so there is nothing to change."
 BUTTON_FAILED = "Sorry, that didn't work — please try again"
@@ -176,8 +181,15 @@ def brand_is_an_item(name, item) -> str:
     return f'"{name}" is what I call an item ({item["name"]}), so it can\'t also be a brand.'
 
 
-def brands_list(names) -> str:
-    return "Brands I know: " + ", ".join(sorted(names, key=str.lower)) + ". Add one with /brand <name>."
+def brands_list(brands) -> str:
+    """The /listbrands reply. brands is (name, the items it has been bought as) pairs."""
+    brands = sorted(brands, key=lambda brand: brand[0].lower())
+    if not brands:
+        return NO_BRANDS
+    lines = ["Brands:"]
+    for name, items in brands:
+        lines.append(f"• {name} — {', '.join(sorted(items)) if items else 'not on any entry yet'}")
+    return "\n".join(lines)
 
 
 def unit_saved(word, means) -> str:

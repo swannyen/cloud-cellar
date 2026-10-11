@@ -22,6 +22,9 @@ WORDS = {
     "price": "price_check",
 }
 
+# The same entries written as bot commands: "/add rice 5kg" is "+ rice 5kg", "/used rice" is "- rice".
+COMMANDS = {"/add": "bought", "/bought": "bought", "/used": "finished"}
+
 # These actions take no quantity or price: everything after the keyword is the item.
 NO_QUANTITY = ("finished", "opened_last")
 
@@ -87,12 +90,13 @@ def parse_line(line, stores=(), units=None):
 
     stores are the saved STORE records and units the taught unit words
     ({word: unit word}). Returns the entry as a dict (action, phrase, quantity,
-    total_price, store, store_is_new, raw), UNREADABLE for a line that starts
-    with a keyword but can't be read, or None for a line that doesn't start
-    with a keyword. A None in an entry means "not given".
+    total_price, store, store_is_new, raw, explicit), UNREADABLE for a line
+    that starts with a keyword but can't be read, or None for a line that
+    doesn't start with a keyword. A None in an entry means "not given".
     """
     raw = " ".join(line.split())
     action, rest = _keyword(raw)
+    explicit = is_explicit(raw)
     # A keyword with nothing after it ("done", "??") is ordinary chat, not an attempt.
     if action is None or not _READABLE.search(rest):
         return None
@@ -101,7 +105,7 @@ def parse_line(line, stores=(), units=None):
         phrase = " ".join(rest.split())
         if not _READABLE.search(phrase):
             return UNREADABLE
-        return _entry(action, phrase, raw)
+        return _entry(action, phrase, raw, explicit=explicit)
     reading = _read(rest, units or {})
     if reading is None:
         return UNREADABLE
@@ -114,7 +118,7 @@ def parse_line(line, stores=(), units=None):
     # A price check needs both, or there is no unit price to compare.
     if action == "price_check" and (price is None or quantity is None):
         return UNREADABLE
-    return _entry(action, phrase, raw, quantity, price, store, store_is_new)
+    return _entry(action, phrase, raw, quantity, price, store, store_is_new, explicit)
 
 
 def parse_bought(line, stores=(), units=None):
@@ -122,6 +126,7 @@ def parse_bought(line, stores=(), units=None):
     entry = parse_line("+ " + line, stores, units)
     if isinstance(entry, dict):
         entry["raw"] = " ".join(line.split())
+        entry["explicit"] = False  # nobody typed the "+"
     return entry
 
 
@@ -129,9 +134,14 @@ def has_keyword(line) -> bool:
     return _keyword(" ".join(line.split()))[0] is not None
 
 
-def starts_with_symbol(line) -> bool:
-    """Whether a line opens with "+", "-" or "?": someone using the format on purpose, not chatting."""
-    return line.strip()[:1] in SYMBOLS
+def is_explicit(line) -> bool:
+    """Whether a line opens with "+", "-", "?" or an entry command: the format used on purpose, not chat."""
+    return line.strip()[:1] in SYMBOLS or is_entry_command(line)
+
+
+def is_entry_command(text) -> bool:
+    """Whether a message starts with /add, /bought or /used (with or without "@BotName")."""
+    return _command(text.strip().partition(" ")[0]) in COMMANDS
 
 
 def has_words(line) -> bool:
@@ -218,8 +228,9 @@ def numbers_in(text) -> list:
     return [float(number) for number in re.findall(_NUMBER, text)]
 
 
-def _entry(action, phrase, raw, quantity=None, price=None, store=None, store_is_new=False) -> dict:
+def _entry(action, phrase, raw, quantity=None, price=None, store=None, store_is_new=False, explicit=False) -> dict:
     return {
+        "explicit": explicit,
         "action": action,
         "phrase": phrase,
         "quantity": quantity,
@@ -235,8 +246,13 @@ def _keyword(line):
     if line[:1] in SYMBOLS:
         return SYMBOLS[line[0]], line[1:]
     word, _, rest = line.partition(" ")
-    action = WORDS.get(word.lower())
+    action = COMMANDS.get(_command(word)) or WORDS.get(word.lower())
     return (action, rest) if action else (None, "")
+
+
+def _command(word) -> str:
+    """"/Add@BotName" -> "/add"."""
+    return word.split("@")[0].lower()
 
 
 def _split_store(text, names):

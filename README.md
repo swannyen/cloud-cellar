@@ -12,9 +12,10 @@ The design and the phase-by-phase build plan are in [PLAN.md](PLAN.md).
 - reads each line of a message with plain code when it follows the format (`+ toilet paper 2x10 $12.90 @fairprice`, `- dish soap`, `low shampoo`, `have rice 2x5kg`, `? detergent 3kg $8.95 @shengsiong`). The store and the numbers are always read by code, never by AI,
 - counts everything in the item's base unit (pieces, rolls, sheets, g, ml) and never guesses what a number means: `2pcs` is two pieces, `2x10rolls` is two packs of ten, and a bare `2` is two packs only once the item's pack size is known. Otherwise nothing is recorded and the bot asks,
 - matches the item by name or saved alias, or by a close spelling, with no AI. A brand taught with `/brand` is taken off the front of the name first and noted on the entry (`kans facial masks` is facial masks, brand kans). It asks Claude only for an item name it can't place (a small call) and for lines that aren't in the format but look like a log (the full free-text parse, whose answer is checked against the message before anything is recorded),
+- takes the same entries as commands: `/add` and `/bought` work like `+`, and `/used` like `-`,
 - shows **Same item** / **New item** buttons under any match it had to guess. One tap saves the name for good, or moves the entry to a new item,
 - records the events in DynamoDB, keeps each item's stock and status (`ok`, `low`, `out`) up to date, and confirms in one line per event with the total in the base unit,
-- answers `/items`, `/undo` (repeat it to step back through the last 24 hours), `/alias`, `/set <item> pack <n>`, `/unit <word> = <unit word>`, `/brand <name>`, `/stats`, `/help` and `/ping`.
+- answers `/items`, `/undo` (repeat it to step back through the last 24 hours), `/alias`, `/set <item> pack <n>`, `/unit <word> = <unit word>`, `/brand <name>`, `/listbrands`, `/stats`, `/help` and `/ping`.
 
 Set `FREE_TEXT_AI` to `"off"` in [template.yaml](template.yaml) to stop the free-text calls: those lines then get a hint about the format instead. `/stats` shows how many lines needed AI this month.
 

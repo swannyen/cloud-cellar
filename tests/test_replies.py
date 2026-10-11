@@ -152,7 +152,7 @@ class FixedTextTest(unittest.TestCase):
         for example in ("+ toilet paper 2x10 $12.90 @fairprice", "- dish soap", "low shampoo", "have rice 2x5kg",
                         "? detergent 3kg $8.95 @shengsiong"):
             self.assertIn(example, replies.HELP)
-        for command in ("/items", "/undo", "/alias", "/set", "/unit", "/brand", "/stats"):
+        for command in ("/items", "/undo", "/alias", "/set", "/unit", "/brand", "/listbrands", "/stats", "/add", "/bought", "/used"):
             self.assertIn(command, replies.HELP)
         for rule in ("2pcs", "2x10rolls", "2pkt", "I ask instead of guessing"):
             self.assertIn(rule, replies.HELP)
@@ -173,6 +173,21 @@ class FixedTextTest(unittest.TestCase):
 
     def test_format_hint_matches_the_plan(self):
         self.assertEqual(replies.FORMAT_HINT, "Didn't catch that. Try: + rice 5kg $12 @ntuc — or /help for all formats.")
+
+    def test_brands_list(self):
+        self.assertEqual(replies.brands_list([]), replies.NO_BRANDS)
+        brands = [("kans", ["Sleeping masks", "Facial masks"]), ("Darlie", []), ("半亩花田", ["Body wash"])]
+        self.assertEqual(replies.brands_list(brands), "\n".join([
+            "Brands:",
+            "• Darlie — not on any entry yet",
+            "• kans — Facial masks, Sleeping masks",
+            "• 半亩花田 — Body wash",
+        ]))
+
+    def test_entry_command_usage_examples_really_parse(self):
+        add, used = replies.ENTRY_COMMAND_USAGE.removeprefix("Use it like this: ").split(" — or ")
+        self.assertEqual(structured.parse_line(add)["action"], "bought")
+        self.assertEqual(structured.parse_line(used)["action"], "finished")
 
     def test_toasts(self):
         self.assertEqual(replies.alias_toast("hand masks", MASKS), "Saved: 'hand masks' = Face masks")
