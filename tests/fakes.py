@@ -7,6 +7,8 @@ from botocore.exceptions import ClientError
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+import structured  # noqa: E402  (needs src/ on sys.path)
+
 
 class FakeTable:
     """In-memory DynamoDB table covering the calls store.py makes.
@@ -38,6 +40,18 @@ class FakeTable:
     def delete_item(self, Key):
         self._maybe_fail("DeleteItem")
         self.rows.pop((Key["pk"], Key["sk"]), None)
+        return {}
+
+    def update_item(self, Key, UpdateExpression, ExpressionAttributeNames, ExpressionAttributeValues):
+        """Only the form store.py uses: "ADD #n0 :v0, #n1 :v1"."""
+        self._maybe_fail("UpdateItem")
+        _reject_floats(ExpressionAttributeValues)
+        assert UpdateExpression.startswith("ADD "), UpdateExpression
+        row = self.rows.setdefault((Key["pk"], Key["sk"]), dict(Key))
+        for pair in UpdateExpression[len("ADD "):].split(", "):
+            name, value = pair.split()
+            attribute = ExpressionAttributeNames[name]
+            row[attribute] = row.get(attribute, 0) + ExpressionAttributeValues[value]
         return {}
 
     def query(self, KeyConditionExpression, ConsistentRead=False, ExclusiveStartKey=None):
@@ -77,18 +91,13 @@ def _reject_floats(value):
             _reject_floats(inner)
 
 
-def parsed_event(action="bought", item_id=None, item_name="Toilet paper", base_unit="roll", **fields):
-    """An event shaped like parser.normalise() output."""
-    event = {
-        "action": action,
-        "item_id": item_id,
-        "item_name": item_name,
-        "base_unit": base_unit,
-        "packs": None,
-        "units_per_pack": None,
-        "total_price": None,
-        "store": None,
-        "brand": None,
-    }
-    event.update(fields)
-    return event
+def entries(text, stores=(), units=None) -> list:
+    """The entries the format parser reads from a message. Every line has to be readable."""
+    results = [result for _, result in structured.parse(text, stores, units)]
+    assert all(isinstance(result, dict) for result in results), results
+    return results
+
+
+def no_ai(*args, **kwargs):
+    """Stands in for ai.match_item in tests where the matcher should have been enough."""
+    raise AssertionError(f"unexpected AI item match: {args}")

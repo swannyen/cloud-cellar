@@ -10,12 +10,13 @@ import time
 import unittest
 from unittest import mock
 
-from fakes import FakeTable, parsed_event
+from fakes import FakeTable, no_ai
 
+import ai
 import claude_api
 import config
 import handler
-import parser
+import replies
 import store
 
 WEBHOOK_SECRET = "test-webhook-secret"
@@ -55,20 +56,28 @@ class HandlerTestCase(unittest.TestCase):
             "secret": mock.patch.object(config, "secret", side_effect=SECRETS.__getitem__),
             "table": mock.patch.object(store, "_table", self.table),
             "send": mock.patch.object(handler.telegram_api, "send_message"),
-            "parse": mock.patch.object(parser, "parse", return_value=parser.Parsed([], None)),
+            "match_item": mock.patch.object(ai, "match_item", side_effect=no_ai),
+            "free_text": mock.patch.object(ai, "parse_free_text", side_effect=no_ai),
             "log": mock.patch.object(handler.logger, "exception"),  # keep expected errors quiet
         }
         started = {name: patch.start() for name, patch in patches.items()}
         for patch in patches.values():
             self.addCleanup(patch.stop)
         self.send_message = started["send"]
-        self.parse = started["parse"]
+        self.match_item = started["match_item"]
+        self.parse_free_text = started["free_text"]
 
     def call(self, *args, **kwargs):
         return handler.lambda_handler(event(*args, **kwargs), None)
 
     def replies(self):
         return [call.args[1] for call in self.send_message.call_args_list]
+
+    def add_item(self, item_id, name, base_unit, aliases=(), **fields):
+        store.create_item({"item_id": item_id, "name": name, "base_unit": base_unit, "aliases": list(aliases), **fields})
+
+    def stats(self, month="2026-10"):
+        return {name: count for name, count in store.get_stats(month).items() if count}
 
 
 class SecretCheckTest(HandlerTestCase):
@@ -130,11 +139,12 @@ class DedupeTest(HandlerTestCase):
 
 
 class AllowedChatTest(HandlerTestCase):
-    def test_other_chat_gets_no_reply_and_is_not_parsed(self):
-        response = self.call(message_update(chat_id=OTHER_CHAT, text="bought rice"))
+    def test_other_chat_gets_no_reply_and_nothing_is_recorded(self):
+        self.add_item("rice", "Rice", "g")
+        response = self.call(message_update(chat_id=OTHER_CHAT, text="+ rice 2"))
         self.assertEqual(response["statusCode"], 200)
         self.send_message.assert_not_called()
-        self.parse.assert_not_called()
+        self.assertEqual(self.table.keys("EVT#"), [])
 
     def test_callback_query_from_other_chat_gets_no_reply(self):
         update = {
@@ -169,10 +179,17 @@ class CommandRouteTest(HandlerTestCase):
         self.call(message_update(text="/ping@bettynuffbot"))
         self.assertEqual(self.replies(), ["pong"])
 
-    def test_commands_are_not_sent_to_claude(self):
+    def test_help_shows_the_format_and_the_commands(self):
         self.call(message_update(text="/help"))
-        self.parse.assert_not_called()
-        self.assertIn("/undo", self.replies()[0])
+        self.assertEqual(self.replies(), [replies.HELP])
+        self.assertIn("/undo", replies.HELP)
+
+    def test_alias_and_stats_are_routed(self):
+        self.add_item("toilet-paper", "Toilet paper", "roll")
+        self.call(message_update(update_id=1, text="/alias loo roll = toilet paper"))
+        self.call(message_update(update_id=2, text="/stats"))
+        self.assertEqual(self.replies()[0], 'Got it: "loo roll" now means Toilet paper.')
+        self.assertIn("October 2026 so far:", self.replies()[1])
 
     def test_unknown_command_gets_no_reply(self):
         self.call(message_update(text="/somethingelse"))
@@ -194,58 +211,341 @@ class CommandRouteTest(HandlerTestCase):
         self.assertEqual(self.replies(), ["pong", handler.ERROR_REPLY])
 
 
-class ChatRouteTest(HandlerTestCase):
-    def test_chatter_with_no_events_gets_no_reply(self):
-        self.call(message_update(text="what time is dinner?"))
-        self.parse.assert_called_once()
-        self.send_message.assert_not_called()
+class FormatRouteTest(HandlerTestCase):
+    def setUp(self):
+        super().setUp()
+        self.add_item("toilet-paper", "Toilet paper", "roll")
+        self.add_item("dish-soap", "Dishwashing liquid", "ml", ["dish soap"])
 
-    def test_parser_gets_text_sender_known_items_and_singapore_date(self):
-        store.create_item({"item_id": "rice", "name": "Rice", "base_unit": "g", "aliases": []})
-        # 2026-10-09 16:30 UTC is already 10 October in Singapore.
-        self.call(message_update(text="rice finish already", date=1791563400))
-        text, sender_name, items, today = self.parse.call_args.args
-        self.assertEqual((text, sender_name), ("rice finish already", "Mei"))
-        self.assertEqual([item["item_id"] for item in items], ["rice"])
-        self.assertEqual(today.isoformat(), "2026-10-10")
-
-    def test_events_are_recorded_and_confirmed_in_one_reply_to_the_message(self):
-        self.parse.return_value = parser.Parsed([
-            parsed_event(packs=2, units_per_pack=10, total_price=12.9, store="FairPrice"),
-            parsed_event("finished", item_name="Dishwashing liquid", base_unit="ml"),
-        ], None)
-        self.call(message_update(update_id=5, text="bought tp and finished the dish soap"))
+    def test_entries_are_recorded_and_confirmed_in_one_reply_to_the_message(self):
+        self.call(message_update(update_id=5, text="+ toilet paper 2x10 $12.90 @fairprice\n- dish soap"))
         self.send_message.assert_called_once_with(
             GROUP_CHAT,
-            "✓ Toilet paper (new item): bought 2 × 10 rolls for $12.90 at FairPrice ($0.65/roll).\n"
-            "✓ Dishwashing liquid (new item): marked finished.",
+            "✓ Toilet paper: bought 2 packs × 10 rolls (20 rolls) for $12.90 at FairPrice ($0.65/roll).\n"
+            "✓ Dishwashing liquid: marked finished.",
             reply_to=MESSAGE_ID,
         )
         self.assertEqual(len(self.table.keys("EVT#")), 2)
+        self.assertEqual(self.stats(), {"lines_structured": 2})
+        self.match_item.assert_not_called()
 
-    def test_clarify_question_is_sent(self):
-        self.parse.return_value = parser.Parsed([], "Which soap did you finish?")
-        self.call(message_update(text="finished the soap"))
-        self.assertEqual(self.replies(), ["Which soap did you finish?"])
+    def test_event_time_is_when_the_message_was_sent(self):
+        self.call(message_update(text="- dish soap", date=1791555000))
+        self.assertEqual(store.list_events("dish-soap")[0]["at"], "2026-10-09T14:10:00Z")
 
-    def test_photo_caption_is_parsed(self):
-        update = message_update(text=None, caption="bought rice 5kg $13.50")
-        self.call(update)
-        self.assertEqual(self.parse.call_args.args[0], "bought rice 5kg $13.50")
+    def test_stats_go_to_the_singapore_month_of_the_message(self):
+        # 2026-10-31 16:30 UTC is already 1 November in Singapore.
+        self.call(message_update(text="- dish soap", date=1793464200))
+        self.assertEqual(self.stats("2026-11"), {"lines_structured": 1})
+        self.assertEqual(self.stats("2026-10"), {})
+
+    def test_line_that_cannot_be_read_gets_the_format_hint(self):
+        self.call(message_update(text="+ 2 3"))
+        self.assertEqual(self.replies(), [replies.FORMAT_HINT])
+        self.assertEqual(self.stats(), {"lines_rejected": 1})
+        self.match_item.assert_not_called()
+
+    def test_hint_is_sent_once_after_the_lines_that_could_be_read(self):
+        self.call(message_update(text="+ 2 3\n- dish soap\n+ $5"))
+        self.assertEqual(self.replies(), ["✓ Dishwashing liquid: marked finished.\n" + replies.FORMAT_HINT])
+        self.assertEqual(self.stats(), {"lines_structured": 1, "lines_rejected": 2})
+
+    def test_a_question_about_the_pack_size_is_the_reply_and_nothing_is_recorded(self):
+        self.call(message_update(text="+ toilet paper 2 $12.90"))
+        self.assertEqual(self.replies(), [
+            "How many in each pack of Toilet paper? Resend like: + toilet paper 2x10rolls $12.90 — "
+            "or write 2rolls if you mean single rolls."
+        ])
+        self.assertEqual(self.table.keys("EVT#"), [])
+        self.assertEqual(self.stats(), {"lines_rejected": 1})
+
+    def test_guessed_match_is_sent_with_its_buttons(self):
+        self.match_item.side_effect = None
+        self.match_item.return_value = ai.ItemMatch("toilet-paper", "Toilet paper", "roll")
+        self.call(message_update(update_id=8, text="+ loo roll 1x10 $6"))
+        self.send_message.assert_called_once_with(
+            GROUP_CHAT,
+            '✓ Toilet paper: bought 1 pack of 10 rolls for $6.00 ($0.60/roll). (Read "loo roll" as Toilet paper.)',
+            reply_to=MESSAGE_ID,
+            buttons=[[("Same item", "m:same:8:0"), ("New item: Loo roll", "m:new:8:0")]],
+        )
+        self.assertEqual(self.stats(), {"lines_structured": 1, "ai_match_calls": 1})
+
+    def test_taught_brands_are_used(self):
+        self.add_item("facial-masks", "Facial masks", "piece", pack_size=5, pack_size_set_at="2026-10-01T00:00:00Z")
+        self.call(message_update(update_id=1, text="/brand kans"))
+        self.call(message_update(update_id=2, text="bought 2 kans facial masks for 1.96 from Taobao"))
+        self.send_message.assert_called_with(
+            GROUP_CHAT, "✓ Facial masks: bought 2 packs × 5 pieces (10 pieces) for $1.96 at Taobao ($0.20/piece).",
+            reply_to=MESSAGE_ID,
+        )
+        self.match_item.assert_not_called()
+
+    def test_taught_unit_words_and_saved_stores_are_used(self):
+        self.add_item("facial-masks", "Facial masks", "piece")
+        store.save_unit("sticks", "pcs", "Mei")
+        store.save_store("qoo10", "Qoo10", "2026-10-01T00:00:00Z")
+        self.call(message_update(text="+ 2 sticks facial masks $1.96 from qoo10"))
+        self.assertEqual(self.replies(), ["✓ Facial masks: bought 2 pieces for $1.96 at Qoo10 ($0.98/piece)."])
+
+    def test_ai_failure_says_which_line_was_not_recorded(self):
+        self.match_item.side_effect = claude_api.ClaudeError("HTTP 529 overloaded_error")
+        with mock.patch.object(handler.apply.logger, "exception"):
+            response = self.call(message_update(text="+ loo roll 2x10"))
+        self.assertEqual(response["statusCode"], 200)
+        self.send_message.assert_called_once_with(GROUP_CHAT, replies.lookup_failed("loo roll"), reply_to=MESSAGE_ID)
+
+    def test_photo_caption_is_read(self):
+        self.call(message_update(text=None, caption="- dish soap"))
+        self.assertEqual(self.replies(), ["✓ Dishwashing liquid: marked finished."])
 
     def test_stickers_and_other_bots_are_ignored(self):
         self.call(message_update(update_id=1, text=None, sticker={"file_id": "x"}))
-        bot_message = message_update(update_id=2, text="bought rice")
+        bot_message = message_update(update_id=2, text="- dish soap")
         bot_message["message"]["from"]["is_bot"] = True
         self.call(bot_message)
-        self.parse.assert_not_called()
         self.send_message.assert_not_called()
+        self.assertEqual(self.table.keys("EVT#"), [])
 
-    def test_claude_failure_apologises_in_reply_to_the_message(self):
-        self.parse.side_effect = claude_api.ClaudeError("HTTP 529 overloaded_error")
-        response = self.call(message_update(text="bought rice"))
+    def test_counter_failure_does_not_cost_the_reply(self):
+        with mock.patch.object(store, "add_stats", side_effect=RuntimeError("throttled")):
+            self.call(message_update(text="- dish soap"))
+        self.assertEqual(self.replies(), ["✓ Dishwashing liquid: marked finished."])
+        handler.logger.exception.assert_called_once()
+
+
+class NoKeywordTest(HandlerTestCase):
+    """A line with no keyword is still a purchase if it has a price and an item known by exactly that name."""
+
+    def setUp(self):
+        super().setUp()
+        self.add_item("facial-masks", "Facial masks", "piece")
+
+    def test_known_item_with_a_price_is_read_as_bought_without_ai(self):
+        self.call(message_update(text="facial masks 5 pcs 1.86 from taobao"))
+        self.assertEqual(self.replies(), ["✓ Facial masks: bought 5 pieces for $1.86 at Taobao ($0.37/piece)."])
+        event, = store.list_events("facial-masks")
+        self.assertEqual((event["parse_path"], event["raw_text"]), ("structured", "facial masks 5 pcs 1.86 from taobao"))
+        self.assertEqual(self.stats(), {"lines_structured": 1})
+        self.parse_free_text.assert_not_called()
+
+    def test_facial_masks_are_not_read_as_face_masks(self):
+        # Only Face masks is tracked here: "facial masks" is a different product, so code doesn't match it.
+        self.table.rows.clear()
+        self.add_item("face-masks", "Face masks", "piece")
+        self.parse_free_text.side_effect = None
+        self.parse_free_text.return_value = ai.Parsed([], None)
+        self.call(message_update(text="facial masks 5 pcs 1.86 from taobao"))
+        self.parse_free_text.assert_called_once()
+        self.assertEqual(self.table.keys("EVT#"), [])
+
+    def test_unknown_item_goes_to_the_free_text_fallback_instead(self):
+        self.parse_free_text.side_effect = None
+        self.parse_free_text.return_value = ai.Parsed([], None)
+        self.call(message_update(text="hand masks 10 pcs 1.45 from taobao"))
+        self.parse_free_text.assert_called_once()
+        self.match_item.assert_not_called()
+
+    def test_taught_brand_in_front_of_a_known_item_is_still_a_purchase(self):
+        store.save_brand("kans", "kans", "Mei")
+        self.call(message_update(text="Kans facial masks 5 pcs 1.86 from taobao"))
+        self.assertEqual(self.replies(), ["✓ Facial masks: bought 5 pieces for $1.86 at Taobao ($0.37/piece)."])
+        self.assertEqual(store.list_events("facial-masks")[0]["brand"], "kans")
+        self.parse_free_text.assert_not_called()
+
+    def test_known_item_without_a_price_is_not_assumed_to_be_a_purchase(self):
+        self.parse_free_text.side_effect = None
+        self.parse_free_text.return_value = ai.Parsed([], None)
+        self.call(message_update(text="facial masks 5 pcs"))
+        self.assertEqual(self.table.keys("EVT#"), [])
+        self.parse_free_text.assert_called_once()
+
+
+def free_event(action="bought", item_id=None, item_name="Toilet paper", base_unit="roll", **fields):
+    """An event shaped like ai.normalise_free_text() output."""
+    event = {"action": action, "item_id": item_id, "item_name": item_name, "base_unit": base_unit,
+             "quantity_text": None, "total_price": None, "store": None, "brand": None}
+    event.update(fields)
+    return event
+
+
+class FreeTextRouteTest(HandlerTestCase):
+    FREE_TEXT = "bought 2 packs toilet paper 10 rolls each $12.90 fairprice"
+
+    def setUp(self):
+        super().setUp()
+        self.add_item("toilet-paper", "Toilet paper", "roll")
+        self.add_item("rice", "Rice", "g")
+        self.add_item("face-masks", "Face masks", "piece")
+
+    def ai_reads(self, *events, clarify=None):
+        self.parse_free_text.side_effect = None
+        self.parse_free_text.return_value = ai.Parsed(list(events), clarify, {"input_tokens": 1500, "output_tokens": 80})
+
+    def test_free_text_gives_the_same_reply_and_event_as_the_format(self):
+        self.ai_reads(free_event(item_id="toilet-paper", item_name="toilet paper", total_price=12.9, store="FairPrice",
+                                 quantity_text="2 packs toilet paper 10 rolls each"))
+        self.call(message_update(update_id=1, text=self.FREE_TEXT))
+        self.call(message_update(update_id=2, text="+ toilet paper 2x10 $12.90 @fairprice"))
+        said, typed = self.replies()
+        self.assertEqual(said, typed)
+        self.assertEqual(said, "✓ Toilet paper: bought 2 packs × 10 rolls (20 rolls) for $12.90 at FairPrice ($0.65/roll).")
+        first, second = store.list_events("toilet-paper")
+        self.assertEqual((first["parse_path"], second["parse_path"]), ("ai_full", "structured"))
+        self.assertEqual((first["qty"], first["unit_price"], first["store"]), (second["qty"], second["unit_price"], second["store"]))
+        self.assertEqual(self.stats(), {"ai_full_calls": 1, "lines_structured": 1})
+        self.match_item.assert_not_called()
+
+    def test_fallback_gets_the_text_sender_items_and_singapore_date(self):
+        self.ai_reads()
+        # 2026-10-09 16:30 UTC is already 10 October in Singapore.
+        self.call(message_update(text="rice finish already", date=1791563400))
+        text, sender_name, items, today = self.parse_free_text.call_args.args
+        self.assertEqual((text, sender_name), ("rice finish already", "Mei"))
+        self.assertEqual([item["item_id"] for item in items], ["face-masks", "rice", "toilet-paper"])
+        self.assertEqual(today.isoformat(), "2026-10-10")
+
+    def test_store_comes_from_the_message_not_from_the_model(self):
+        # The model answers Shopee; the message says Taobao.
+        self.ai_reads(free_event(item_id="face-masks", item_name="face masks", base_unit="piece",
+                                 quantity_text="5 pcs", total_price=1.86, store="Shopee"))
+        self.call(message_update(text="got Face Masks 5 pcs for $1.86 from Taobao"))
+        self.assertEqual(self.replies(), ["✓ Face masks: bought 5 pieces for $1.86 at Taobao ($0.37/piece)."])
+        self.assertEqual(store.list_events("face-masks")[0]["store"], "Taobao")
+
+    def test_numbers_the_model_made_up_are_dropped_and_said(self):
+        self.ai_reads(free_event(item_id="face-masks", item_name="face masks", base_unit="piece",
+                                 quantity_text="10 pcs", total_price=14.5, store="Lazada"))
+        self.call(message_update(text="got face masks, 10 pcs"))
+        self.assertEqual(self.replies(), ["✓ Face masks: bought 10 pieces. (Didn't catch the store or price.)"])
+
+    def test_models_guess_at_the_item_gets_the_confirmation_buttons(self):
+        self.ai_reads(free_event(item_id="face-masks", item_name="HAND masks", base_unit="piece",
+                                 quantity_text="10 pcs", total_price=1.45, store="Taobao"))
+        self.call(message_update(update_id=4, text="HAND masks 10 pcs $1.45 from Taobao"))
+        self.send_message.assert_called_once_with(
+            GROUP_CHAT,
+            '✓ Face masks: bought 10 pieces for $1.45 at Taobao ($0.14/piece). (Read "HAND masks" as Face masks.)',
+            reply_to=MESSAGE_ID,
+            buttons=[[("Same item", "m:same:4:0"), ("New item: Hand masks", "m:new:4:0")]],
+        )
+
+    def test_switched_off_the_same_message_gets_the_hint_and_no_ai_call(self):
+        with mock.patch.dict(os.environ, {"FREE_TEXT_AI": "off"}):
+            self.call(message_update(update_id=1, text=self.FREE_TEXT))
+            self.call(message_update(update_id=2, text="rice finish already"))
+        self.assertEqual(self.replies(), [replies.FORMAT_HINT, replies.FORMAT_HINT])
+        self.parse_free_text.assert_not_called()
+        self.assertEqual(self.stats(), {"lines_rejected": 2})
+        self.assertEqual(self.table.keys("EVT#"), [])
+
+    def test_chat_that_only_looked_like_a_log_stays_silent(self):
+        self.ai_reads()
+        self.call(message_update(text="see you at 7"))
+        self.send_message.assert_not_called()
+        self.assertEqual(self.stats(), {"ai_full_calls": 1})
+
+    def test_format_attempt_the_ai_cannot_read_either_gets_the_hint(self):
+        self.ai_reads()
+        self.call(message_update(text="+ rice 2 3"))
+        self.assertEqual(self.replies(), [replies.FORMAT_HINT])
+        self.assertEqual(self.stats(), {"ai_full_calls": 1, "lines_rejected": 1})
+
+    def test_clarifying_question_is_sent(self):
+        self.ai_reads(clarify="Which soap did you finish?")
+        self.call(message_update(text="the big bottle of soap is finished"))
+        self.assertEqual(self.replies(), ["Which soap did you finish?"])
+        self.assertEqual(self.table.keys("EVT#"), [])
+
+    def test_free_text_lines_share_one_call_and_format_lines_skip_it(self):
+        self.ai_reads(free_event("finished", item_id="rice", item_name="rice", base_unit="g"))
+        self.call(message_update(text="+ toilet paper 2x10\nrice finish already\nlol\nalso the eggs, 30 for $6"))
+        self.parse_free_text.assert_called_once()
+        self.assertEqual(self.parse_free_text.call_args.args[0], "rice finish already\nalso the eggs, 30 for $6")
+        self.assertEqual(self.replies(), ["✓ Toilet paper: bought 2 packs × 10 rolls (20 rolls).\n✓ Rice: marked finished."])
+        self.assertEqual(self.stats(), {"lines_structured": 1, "ai_full_calls": 1})
+
+    def test_fallback_failure_keeps_the_format_lines(self):
+        self.parse_free_text.side_effect = claude_api.ClaudeError("HTTP 529 overloaded_error")
+        response = self.call(message_update(text="+ toilet paper 2x10\nrice finish already"))
         self.assertEqual(response["statusCode"], 200)
-        self.send_message.assert_called_once_with(GROUP_CHAT, handler.ERROR_REPLY, reply_to=MESSAGE_ID)
+        self.assertEqual(self.replies(), ["✓ Toilet paper: bought 2 packs × 10 rolls (20 rolls).\n" + replies.FREE_TEXT_FAILED])
+        self.assertEqual(self.stats(), {"lines_structured": 1})
+
+    def test_free_text_is_on_unless_switched_off(self):
+        for value, expected in (("on", True), ("off", False), (" OFF ", False), ("", True)):
+            with mock.patch.dict(os.environ, {"FREE_TEXT_AI": value}):
+                self.assertIs(config.free_text_ai(), expected)
+        with mock.patch.dict(os.environ):
+            os.environ.pop("FREE_TEXT_AI", None)
+            self.assertTrue(config.free_text_ai())
+
+
+class ButtonRouteTest(HandlerTestCase):
+    def setUp(self):
+        super().setUp()
+        patches = [
+            mock.patch.object(handler.telegram_api, "answer_callback_query"),
+            mock.patch.object(handler.telegram_api, "edit_buttons"),
+        ]
+        self.answer, self.edit = (patch.start() for patch in patches)
+        for patch in patches:
+            self.addCleanup(patch.stop)
+        self.add_item("face-masks", "Face masks", "piece")
+        self.match_item.side_effect = None
+        self.match_item.return_value = ai.ItemMatch("face-masks", "Face masks", "piece")
+        self.call(message_update(update_id=5, text="+ hand masks 10 pcs $1.45 from taobao"))
+        self.rows = self.send_message.call_args.kwargs["buttons"]
+
+    def tap(self, data, update_id=6, chat_id=GROUP_CHAT):
+        keyboard = [[{"text": label, "callback_data": value} for label, value in row] for row in self.rows]
+        return self.call({"update_id": update_id, "callback_query": {
+            "id": "cb1", "data": data, "from": {"id": 43, "first_name": "Jun"},
+            "message": {"message_id": 77, "chat": {"id": chat_id}, "reply_markup": {"inline_keyboard": keyboard}},
+        }})
+
+    def test_new_item_tap_moves_the_entry_and_clears_the_buttons(self):
+        response = self.tap("m:new:5:0")
+        self.assertEqual(response["statusCode"], 200)
+        self.answer.assert_called_once_with("cb1", "Made a new item: Hand masks")
+        self.edit.assert_called_once_with(GROUP_CHAT, 77, [])
+        self.assertEqual(store.list_events("hand-masks")[0]["store"], "Taobao")
+        self.assertEqual(store.list_events("face-masks"), [])
+
+    def test_same_item_tap_then_the_phrase_needs_no_ai_and_no_buttons(self):
+        self.tap("m:same:5:0")
+        self.answer.assert_called_once_with("cb1", "Saved: 'hand masks' = Face masks")
+        self.match_item.side_effect = no_ai
+        self.send_message.reset_mock()
+        self.call(message_update(update_id=7, text="+ hand masks 2pcs"))
+        self.send_message.assert_called_once_with(GROUP_CHAT, "✓ Face masks: bought 2 pieces.", reply_to=MESSAGE_ID)
+
+    def test_same_tap_delivered_twice_is_acted_on_once(self):
+        self.tap("m:new:5:0", update_id=6)
+        self.tap("m:new:5:0", update_id=6)
+        self.answer.assert_called_once()
+
+    def test_tap_from_another_chat_is_ignored(self):
+        self.tap("m:new:5:0", chat_id=OTHER_CHAT)
+        self.answer.assert_not_called()
+        self.assertEqual(len(store.list_events("face-masks")), 1)
+
+    def test_failure_still_answers_the_tap(self):
+        with mock.patch.object(handler.buttons.apply, "split_into_new_item", side_effect=RuntimeError("boom")):
+            response = self.tap("m:new:5:0")
+        self.assertEqual(response["statusCode"], 200)
+        self.answer.assert_called_once_with("cb1", replies.BUTTON_FAILED)
+
+
+class ChatterTest(HandlerTestCase):
+    def test_chatter_gets_no_reply_and_no_ai_call(self):
+        self.add_item("rice", "Rice", "g")
+        for update_id, text in enumerate(["ok thanks", "done", "??", "finished", "haha\nsee you later", "the price is crazy"]):
+            self.call(message_update(update_id=update_id, text=text))
+        self.send_message.assert_not_called()
+        self.match_item.assert_not_called()
+        self.parse_free_text.assert_not_called()
+        self.assertEqual(self.table.keys("EVT#") + self.table.keys("STATS"), [])
 
 
 if __name__ == "__main__":

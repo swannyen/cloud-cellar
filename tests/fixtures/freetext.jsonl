@@ -1,0 +1,69 @@
+{"known_items": [{"item_id": "toilet-paper", "name": "Toilet paper", "base_unit": "roll", "aliases": ["loo roll", "TP"]}, {"item_id": "dish-soap", "name": "Dishwashing liquid", "base_unit": "ml", "aliases": ["dish soap"]}, {"item_id": "laundry-detergent", "name": "Laundry detergent", "base_unit": "g", "aliases": ["detergent"]}, {"item_id": "rice", "name": "Rice", "base_unit": "g", "aliases": []}, {"item_id": "eggs", "name": "Eggs", "base_unit": "piece", "aliases": []}, {"item_id": "cooking-oil", "name": "Cooking oil", "base_unit": "ml", "aliases": ["oil"]}, {"item_id": "shampoo", "name": "Shampoo", "base_unit": "ml", "aliases": []}, {"item_id": "toothpaste", "name": "Toothpaste", "base_unit": "g", "aliases": []}, {"item_id": "milk", "name": "Fresh milk", "base_unit": "ml", "aliases": ["milk"]}, {"item_id": "tissue-box", "name": "Tissue box", "base_unit": "piece", "aliases": ["tissues", "tissue"]}, {"item_id": "hand-soap", "name": "Hand soap", "base_unit": "ml", "aliases": ["handwash"]}, {"item_id": "kitchen-towel", "name": "Kitchen towel", "base_unit": "roll", "aliases": ["kitchen roll"]}, {"item_id": "face-masks", "name": "Face masks", "base_unit": "piece", "aliases": []}]}
+{"id": "tp-full", "text": "bought 2 packs toilet paper 10 rolls each $12.90 fairprice", "expect": [{"action": "bought", "item_id": "toilet-paper", "total_price": 12.9, "store": "FairPrice", "qty": 20}]}
+{"id": "rice-5kg", "text": "Got rice from Sheng Siong, 5kg bag $13.50", "expect": [{"action": "bought", "item_id": "rice", "total_price": 13.5, "store": "Sheng Siong", "qty": 5000}]}
+{"id": "dish-soap-refill", "text": "restocked dish soap - Mama Lemon 1L refill, $2.95 at Giant", "expect": [{"action": "bought", "item_id": "dish-soap", "total_price": 2.95, "store": "Giant", "brand": "Mama Lemon", "qty": 1000}]}
+{"id": "milk-3x2l", "text": "bought 3 x 2L milk at cold storage, $6.50 each", "expect": [{"action": "bought", "item_id": "milk", "store": "Cold Storage", "qty": 6000}]}
+{"id": "eggs-tray", "text": "got a tray of 30 eggs $6.80 ntuc", "expect": [{"action": "bought", "item_id": "eggs", "total_price": 6.8, "store": "FairPrice", "packs": 30}]}
+{"id": "toothpaste-twin", "text": "bought Darlie toothpaste twin pack 2x225g for 7.90 at watsons", "expect": [{"action": "bought", "item_id": "toothpaste", "total_price": 7.9, "store": "Watsons", "brand": "Darlie", "qty": 450}]}
+{"id": "oil-and-tp", "text": "bought cooking oil 2L $8.45 sheng siong, and a 10-roll pack of TP for $6.50", "expect": [{"action": "bought", "item_id": "cooking-oil", "total_price": 8.45, "store": "Sheng Siong", "qty": 2000}, {"action": "bought", "item_id": "toilet-paper", "total_price": 6.5, "store": {"any": ["Sheng Siong", null]}, "qty": 10}]}
+{"id": "new-body-wash", "text": "bought Dettol body wash 950ml $9.90 at Guardian", "expect": [{"action": "bought", "new": ["body wash", "shower"], "base_unit": "ml", "total_price": 9.9, "store": "Guardian", "brand": "Dettol", "qty": 950}]}
+{"id": "new-sponges", "text": "got a pack of sponges from Daiso, 5 pieces $2.14", "expect": [{"action": "bought", "new": ["sponge"], "base_unit": "piece", "total_price": 2.14, "store": "Daiso", "qty": 5}]}
+{"id": "shopee-detergent", "text": "Shopee order arrived: Tide detergent 4kg, $15.90", "expect": [{"action": "bought", "item_id": "laundry-detergent", "total_price": 15.9, "store": "Shopee", "brand": "Tide", "qty": 4000}]}
+{"id": "eggs-bare", "text": "bought eggs", "expect": [{"action": "bought", "item_id": "eggs"}]}
+{"id": "shampoo-two", "text": "bought 2 bottles of shampoo, Pantene, $15 for both at Watsons", "expect": [{"action": "bought", "item_id": "shampoo", "total_price": 15, "store": "Watsons", "brand": "Pantene", "packs": 2}]}
+{"id": "kitchen-towel-promo", "text": "kitchen towel on offer at fairprice, 2 packs for $9.90 (usual 6.50 each), 6 rolls per pack. bought 2", "expect": [{"action": "bought", "item_id": "kitchen-towel", "total_price": 9.9, "store": "FairPrice", "qty": 12}]}
+{"id": "hand-soap-each", "text": "bought hand soap refill 500ml x2 at $3.20 each from Guardian", "expect": [{"action": "bought", "item_id": "hand-soap", "store": "Guardian", "qty": 1000}]}
+{"id": "ntuc-run", "text": "NTUC run: eggs, milk and rice. $31.40 total", "expect": [{"action": "bought", "item_id": "eggs", "store": "FairPrice"}, {"action": "bought", "item_id": "milk", "store": "FairPrice"}, {"action": "bought", "item_id": "rice", "store": "FairPrice"}]}
+{"id": "new-soy-sauce", "text": "bought 1 bottle of Kikkoman soy sauce 600ml at Don Don Donki for $5.90", "expect": [{"action": "bought", "new": ["soy sauce"], "base_unit": "ml", "total_price": 5.9, "store": "Don Don Donki", "brand": "Kikkoman", "qty": 600}]}
+{"id": "new-coffee-sticks", "text": "bought Nescafe 3-in-1 at Giant $7.20, 35 sticks", "expect": [{"action": "bought", "new": ["coffee"], "base_unit": "piece", "total_price": 7.2, "store": "Giant", "brand": "Nescafe", "packs": 35}]}
+{"id": "finished-dish-soap", "text": "finished the dish soap", "expect": [{"action": "finished", "item_id": "dish-soap"}]}
+{"id": "rice-finish", "text": "rice finish already", "expect": [{"action": "finished", "item_id": "rice"}]}
+{"id": "no-more-eggs", "text": "no more eggs", "expect": [{"action": "finished", "item_id": "eggs"}]}
+{"id": "handwash-used", "text": "used up the handwash in the kitchen", "expect": [{"action": "finished", "item_id": "hand-soap"}]}
+{"id": "kitchen-roll-habis", "text": "aiyo the kitchen roll habis liao", "expect": [{"action": "finished", "item_id": "kitchen-towel"}]}
+{"id": "opened-last-tp", "text": "opened the last pack of toilet paper", "expect": [{"action": "opened_last", "item_id": "toilet-paper"}]}
+{"id": "last-toothpaste", "text": "last tube of toothpaste, just started using it", "expect": [{"action": "opened_last", "item_id": "toothpaste"}]}
+{"id": "low-oil", "text": "running low on cooking oil", "expect": [{"action": "opened_last", "item_id": "cooking-oil"}]}
+{"id": "milk-and-tissue", "text": "finished the milk and opened the last box of tissues", "expect": [{"action": "finished", "item_id": "milk"}, {"action": "opened_last", "item_id": "tissue-box"}]}
+{"id": "count-rice", "text": "we have 3 bags of rice in the storeroom", "expect": [{"action": "stock_count", "item_id": "rice", "packs": 3}]}
+{"id": "count-tp", "text": "checked the cupboard, 4 packs of TP left", "expect": [{"action": "stock_count", "item_id": "toilet-paper", "packs": 4}]}
+{"id": "plenty-shampoo", "text": "still got plenty of shampoo, no need to buy", "expect": [{"action": "still_have", "item_id": "shampoo"}]}
+{"id": "check-daia", "text": "is $8.95 for 3kg of Daia detergent a good price?", "expect": [{"action": "price_check", "item_id": "laundry-detergent", "total_price": 8.95, "brand": "Daia", "qty": 3000}]}
+{"id": "check-rice-giant", "text": "Giant selling 10kg rice for $23.90, worth it?", "expect": [{"action": "price_check", "item_id": "rice", "total_price": 23.9, "store": "Giant", "qty": 10000}]}
+{"id": "check-tp", "text": "saw toilet paper 3 packs for $18 at Sheng Siong, 10 rolls per pack. good deal?", "expect": [{"action": "price_check", "item_id": "toilet-paper", "total_price": 18, "store": "Sheng Siong", "qty": 30}]}
+{"id": "clarify-soap", "text": "finished the soap", "expect": [], "clarify": true}
+{"id": "chat-dinner", "text": "what time is dinner tonight?", "expect": []}
+{"id": "chat-late", "text": "I'll be home late, don't wait up", "expect": []}
+{"id": "chat-kids", "text": "can someone pick up the kids at 5?", "expect": []}
+{"id": "chat-lol", "text": "lol ok", "expect": []}
+{"id": "chat-birthday", "text": "happy birthday ah ma! 🎂", "expect": []}
+{"id": "chat-vacuum", "text": "should we get a new vacuum cleaner? the old one is dying", "expect": []}
+{"id": "chat-going-ntuc", "text": "I'm going to NTUC later, need anything?", "expect": []}
+{"id": "chat-chicken-rice", "text": "had chicken rice for lunch, damn good", "expect": []}
+{"id": "chat-laundry", "text": "remember to bring the laundry in, going to rain", "expect": []}
+{"id": "chat-thanks", "text": "thanks!", "expect": []}
+{"id": "chat-tickets", "text": "bought the movie tickets for saturday", "expect": []}
+{"id": "chat-need-eggs", "text": "need to buy eggs tomorrow", "expect": []}
+{"id": "unseen-first-message", "text": "bought 2 packs toilet paper 10 rolls each $12.90 fairprice", "known": [], "expect": [{"action": "bought", "new": ["toilet"], "base_unit": "roll", "total_price": 12.9, "store": "FairPrice", "qty": 20}]}
+{"id": "unseen-finished-dish-soap", "text": "finished the dish soap", "known": ["toilet-paper"], "expect": [{"action": "finished", "new": ["dish"], "base_unit": "ml"}]}
+{"id": "unseen-rice-finish", "text": "rice finish already", "known": ["toilet-paper"], "expect": [{"action": "finished", "new": ["rice"], "base_unit": "g"}]}
+{"id": "unseen-soap-not-ambiguous", "text": "finished the soap", "known": ["toilet-paper"], "expect": [{"action": "finished", "new": ["soap"], "base_unit": {"any": ["piece", "ml", "g"]}}]}
+{"id": "unseen-count-shampoo", "text": "we have 3 bottles of shampoo", "known": [], "expect": [{"action": "stock_count", "new": ["shampoo"], "base_unit": "ml", "packs": 3}]}
+{"id": "unseen-plenty-eggs", "text": "still got plenty of eggs, don't buy", "known": ["toilet-paper", "rice"], "expect": [{"action": "still_have", "new": ["egg"], "base_unit": "piece"}]}
+{"id": "unseen-low-detergent", "text": "running low on laundry detergent", "known": ["toilet-paper"], "expect": [{"action": "opened_last", "new": ["detergent"], "base_unit": {"any": ["g", "ml"]}}]}
+{"id": "unseen-last-toothpaste", "text": "opened the last tube of toothpaste", "known": [], "expect": [{"action": "opened_last", "new": ["toothpaste"], "base_unit": {"any": ["g", "ml"]}}]}
+{"id": "unseen-chat-empty-list", "text": "anyone home?", "known": [], "expect": []}
+{"id": "heldout-vinegar-finished", "text": "vinegar finished already", "known": ["toilet-paper", "rice"], "expect": [{"action": "finished", "new": ["vinegar"], "base_unit": "ml"}]}
+{"id": "heldout-last-conditioner", "text": "just opened the last bottle of conditioner", "known": ["shampoo", "toilet-paper"], "expect": [{"action": "opened_last", "new": ["conditioner"], "base_unit": "ml"}]}
+{"id": "heldout-count-sugar", "text": "there are 2 packs of sugar in the pantry", "known": [], "expect": [{"action": "stock_count", "new": ["sugar"], "base_unit": "g", "packs": 2}]}
+{"id": "heldout-low-ketchup", "text": "almost out of ketchup", "known": ["rice"], "expect": [{"action": "opened_last", "new": ["ketchup"], "base_unit": {"any": ["g", "ml"]}}]}
+{"id": "heldout-plenty-salt", "text": "plenty of salt left, don't buy more", "known": ["rice", "eggs"], "expect": [{"action": "still_have", "new": ["salt"], "base_unit": "g"}]}
+{"id": "heldout-hand-soap-not-dish-soap", "text": "bought hand soap 250ml $2.50 at Guardian", "known": ["dish-soap", "toilet-paper"], "expect": [{"action": "bought", "new": ["hand"], "base_unit": "ml", "total_price": 2.5, "store": "Guardian", "qty": 250}]}
+{"id": "heldout-chat-soap-opera", "text": "is the soap opera on tonight?", "known": ["toilet-paper"], "expect": []}
+{"id": "ground-facial-masks-taobao", "text": "Facial masks 5 pcs 1.86 from Taobao", "expect": [{"action": "bought", "new": ["facial"], "base_unit": "piece", "qty": 5, "total_price": 1.86, "store": "Taobao"}]}
+{"id": "ground-hand-masks-taobao", "text": "HAND masks 10 pcs $1.45 from Taobao", "expect": [{"action": "bought", "new": ["hand"], "base_unit": "piece", "qty": 10, "total_price": 1.45, "store": "Taobao"}]}
+{"id": "ground-unknown-unit-word", "text": "got 35 sticks of instant coffee for 7.20 on taobao", "expect": [{"action": "bought", "new": ["coffee"], "base_unit": {"any": ["piece", "g"]}, "packs": 35, "total_price": 7.2, "store": "Taobao"}]}
+{"id": "ground-no-store", "text": "body wash 900ml x 2, $9.80", "known": ["toilet-paper", "face-masks"], "expect": [{"action": "bought", "new": ["body wash", "shower"], "base_unit": "ml", "qty": 1800, "total_price": 9.8}]}
+{"id": "ground-foot-masks-not-face-masks", "text": "ordered foot mask 1 box 10pcs, $1.45, from tb", "expect": [{"action": "bought", "new": ["foot"], "base_unit": "piece", "qty": 10, "total_price": 1.45, "store": "Taobao"}]}
+{"id": "brand-then-facial-masks", "text": "bought 2 pcs Kans facial masks for 1.96 from Taobao", "expect": [{"action": "bought", "new": ["facial"], "base_unit": "piece", "qty": 2, "total_price": 1.96, "store": "Taobao", "brand": {"any": ["Kans", null]}}]}
+{"id": "face-masks-are-still-face-masks", "text": "bought face masks 50 pcs $3.99 from taobao", "expect": [{"action": "bought", "item_id": "face-masks", "qty": 50, "total_price": 3.99, "store": "Taobao"}]}

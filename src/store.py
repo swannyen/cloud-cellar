@@ -13,7 +13,14 @@ from botocore.exceptions import ClientError
 import config
 
 DEDUPE_TTL_SECONDS = 2 * 24 * 60 * 60
+UNDO_TTL_SECONDS = 24 * 60 * 60
+PENDING_TTL_SECONDS = 7 * 24 * 60 * 60
 ITEM_PK = "ITEM"
+STORE_PK = "STORE"
+UNIT_PK = "UNIT"
+BRAND_PK = "BRAND"
+STATS_PK = "STATS"
+STAT_NAMES = ("lines_structured", "ai_match_calls", "ai_full_calls", "lines_rejected")
 
 _table = None
 
@@ -80,18 +87,97 @@ def delete_event(pk, sk):
     _delete(pk, sk)
 
 
-# --- Each user's last event (for /undo) ---------------------------------------
+# --- Each user's recent events (for /undo) -------------------------------------
 
-def set_last_event(user_id, pk, sk, at):
-    _put(f"USER#{user_id}", "LAST", {"event_pk": pk, "event_sk": sk, "at": at})
+def add_recent_event(user_id, sk, record):
+    """Remember an event the user just logged. sk is the event's own sort key.
+
+    DynamoDB removes the record some time after 24 hours; callers still check its age.
+    """
+    _put(f"USER#{user_id}", sk, {**record, "ttl": int(time.time()) + UNDO_TTL_SECONDS})
 
 
-def get_last_event(user_id):
-    return _get(f"USER#{user_id}", "LAST")
+def list_recent_events(user_id) -> list:
+    """The user's remembered events, oldest first."""
+    return _query(f"USER#{user_id}")
 
 
-def clear_last_event(user_id):
-    _delete(f"USER#{user_id}", "LAST")
+def delete_recent_event(user_id, sk):
+    _delete(f"USER#{user_id}", sk)
+
+
+# --- Stores first used with "@" --------------------------------------------------
+
+def list_stores() -> list:
+    return [{**record, "store_id": record["sk"]} for record in _query(STORE_PK)]
+
+
+def save_store(store_id, name, at):
+    _put(STORE_PK, store_id, {"name": name, "aliases": [], "last_used_at": at})
+
+
+# --- Unit words taught with /unit ------------------------------------------------
+
+def list_units() -> dict:
+    """Taught unit words: {word: the built-in unit word it means}."""
+    return {record["sk"]: record["means"] for record in _query(UNIT_PK)}
+
+
+def save_unit(word, means, added_by):
+    _put(UNIT_PK, word, {"means": means, "added_by": added_by})
+
+
+# --- Brands taught with /brand ----------------------------------------------------
+
+def list_brands() -> list:
+    """The names of the taught brands, as they were typed."""
+    return [record["name"] for record in _query(BRAND_PK)]
+
+
+def save_brand(brand_id, name, added_by):
+    _put(BRAND_PK, brand_id, {"name": name, "added_by": added_by})
+
+
+# --- Guessed matches waiting for a button tap -------------------------------------
+
+def put_pending(update_id, line, record):
+    _put(_pending_pk(update_id, line), "-", {**record, "ttl": int(time.time()) + PENDING_TTL_SECONDS})
+
+
+def get_pending(update_id, line):
+    return _get(_pending_pk(update_id, line), "-")
+
+
+def delete_pending(update_id, line):
+    _delete(_pending_pk(update_id, line), "-")
+
+
+def _pending_pk(update_id, line) -> str:
+    return f"PEND#{update_id}#{line}"
+
+
+# --- Monthly usage counters (for /stats) ----------------------------------------
+
+def add_stats(month, counts):
+    """Add to the month's counters. month is "yyyy-mm"; counts maps STAT_NAMES to amounts.
+
+    The update is atomic, so two messages handled at once are both counted.
+    """
+    counts = {name: amount for name, amount in counts.items() if amount}
+    if not counts:
+        return
+    _get_table().update_item(
+        Key={"pk": STATS_PK, "sk": month},
+        UpdateExpression="ADD " + ", ".join(f"#n{i} :v{i}" for i in range(len(counts))),
+        ExpressionAttributeNames={f"#n{i}": name for i, name in enumerate(counts)},
+        ExpressionAttributeValues={f":v{i}": amount for i, amount in enumerate(counts.values())},
+    )
+
+
+def get_stats(month) -> dict:
+    """The month's counters, with 0 for any that haven't been counted yet."""
+    record = _get(STATS_PK, month) or {}
+    return {name: record.get(name, 0) for name in STAT_NAMES}
 
 
 # --- Table access -------------------------------------------------------------

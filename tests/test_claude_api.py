@@ -70,6 +70,11 @@ class ClaudeApiTest(unittest.TestCase):
             "messages": [{"role": "user", "content": "user text"}],
         })
 
+    def test_token_limit_can_be_set_per_call(self):
+        self.responses = [api_message()]
+        claude_api.complete_json("system text", "user text", SCHEMA, max_tokens=100)
+        self.assertEqual(json.loads(self.requests[0][0].data)["max_tokens"], 100)
+
     def test_returns_parsed_json_and_the_raw_message(self):
         self.responses = [api_message('{"events": [], "clarify": "Which one?"}')]
         data, message = self.call()

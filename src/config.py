@@ -17,6 +17,16 @@ def claude_model() -> str:
     return os.environ.get("CLAUDE_MODEL", "claude-haiku-5-5")
 
 
+def home_currency() -> str:
+    """The currency a plain "$" price is in (PLAN.md §3). Every event records it."""
+    return os.environ.get("HOME_CURRENCY", "SGD")
+
+
+def free_text_ai() -> bool:
+    """Whether free-text lines go to the AI fallback (PLAN.md §5.4). On unless FREE_TEXT_AI is "off"."""
+    return os.environ.get("FREE_TEXT_AI", "on").strip().lower() != "off"
+
+
 def allowed_chat_ids() -> frozenset:
     raw = os.environ.get("ALLOWED_CHAT_IDS", "")
     return frozenset(int(part) for part in raw.split(",") if part.strip())

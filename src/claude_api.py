@@ -1,4 +1,4 @@
-"""Claude Messages API over urllib, returning schema-shaped JSON (PLAN.md §5.1)."""
+"""Claude Messages API over urllib, returning schema-shaped JSON (PLAN.md §5.5)."""
 import json
 import time
 import urllib.error
@@ -9,7 +9,7 @@ import config
 API_URL = "https://api.anthropic.com/v1/messages"
 API_VERSION = "2023-06-01"
 TIMEOUT_SECONDS = 20          # for the whole call, including the one retry
-MAX_TOKENS = 2048             # room for a long shopping-trip message
+MAX_TOKENS = 2048             # the default: room for a long shopping-trip message
 RETRY_STATUSES = (429, 500, 529)  # rate limited, server error, overloaded
 RETRY_PAUSE_SECONDS = 1
 
@@ -18,11 +18,11 @@ class ClaudeError(Exception):
     """The call failed or produced no usable JSON. The message never includes the API key."""
 
 
-def complete_json(system: str, user: str, schema: dict):
+def complete_json(system: str, user: str, schema: dict, max_tokens: int = MAX_TOKENS):
     """Return (data, message): the JSON the model produced and the raw API message."""
     message = _post({
         "model": config.claude_model(),
-        "max_tokens": MAX_TOKENS,
+        "max_tokens": max_tokens,
         "thinking": {"type": "disabled"},
         "output_config": {
             "effort": "low",
