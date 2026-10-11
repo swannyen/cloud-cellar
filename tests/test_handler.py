@@ -355,10 +355,26 @@ class EntryCommandTest(HandlerTestCase):
         self.assertEqual(self.replies(), ["✓ Dishwashing liquid: marked finished."])
         self.assertEqual(store.get_item("dish-soap")["status"], "out")
 
+    def test_stocktake_sets_the_count_like_have(self):
+        self.call(message_update(update_id=1, text="/add toilet paper 9x10"))
+        self.call(message_update(update_id=2, text="/stocktake toilet paper 4"))
+        self.assertEqual(self.replies()[1], "✓ Toilet paper: counted 4 packs × 10 rolls (40 rolls) in stock.")
+        self.assertEqual(store.get_item("toilet-paper")["stock_est"], 40)
+        event = store.list_events("toilet-paper")[-1]
+        self.assertEqual((event["action"], event["raw_text"]), ("stock_count", "/stocktake toilet paper 4"))
+        # The same as the word it stands for.
+        self.call(message_update(update_id=3, text="have toilet paper 4"))
+        self.assertEqual(self.replies()[2], self.replies()[1])
+
+    def test_stocktake_without_a_pack_size_asks_instead_of_guessing(self):
+        self.call(message_update(text="/stocktake toilet paper 4"))
+        self.assertEqual(self.replies(), ["How many in each pack of Toilet paper? Resend like: have toilet paper 4x10rolls — "
+                                          "or write 4rolls if you mean single rolls."])
+
     def test_command_with_nothing_after_it_says_how_to_use_it(self):
-        for update_id, text in enumerate(["/add", "/used", "/bought@bettynuffbot"]):
+        for update_id, text in enumerate(["/add", "/used", "/bought@bettynuffbot", "/stocktake"]):
             self.call(message_update(update_id=update_id, text=text))
-        self.assertEqual(self.replies(), [replies.ENTRY_COMMAND_USAGE] * 3)
+        self.assertEqual(self.replies(), [replies.ENTRY_COMMAND_USAGE] * 4)
         self.assertEqual(self.table.keys("EVT#"), [])
 
     def test_command_that_cannot_be_read_gets_the_format_hint(self):

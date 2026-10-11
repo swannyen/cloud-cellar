@@ -101,7 +101,7 @@ def _route(update, chat_id):
         logger.info("update %s: command %s", update_id, text.split()[0].split("@")[0][:20])
         reply = commands.handle(text, sender, now=int(time.time()))
     else:
-        # Chat, or /add, /bought and /used, which are the format written as commands.
+        # Chat, or /add, /bought, /used and /stocktake, which are the format written as commands.
         reply, rows = _handle_chat(update_id, text, sender, message.get("date") or int(time.time()))
         if not reply and text.startswith("/"):
             reply = replies.ENTRY_COMMAND_USAGE  # "/add" with nothing after it

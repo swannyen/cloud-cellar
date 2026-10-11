@@ -22,8 +22,9 @@ WORDS = {
     "price": "price_check",
 }
 
-# The same entries written as bot commands: "/add rice 5kg" is "+ rice 5kg", "/used rice" is "- rice".
-COMMANDS = {"/add": "bought", "/bought": "bought", "/used": "finished"}
+# The same entries written as bot commands: "/add rice 5kg" is "+ rice 5kg", "/used rice" is
+# "- rice", and "/stocktake rice 2" is "have rice 2".
+COMMANDS = {"/add": "bought", "/bought": "bought", "/used": "finished", "/stocktake": "stock_count"}
 
 # This action takes no quantity or price: everything after the keyword is the item.
 NO_QUANTITY = ("opened_last",)
@@ -145,7 +146,7 @@ def is_explicit(line) -> bool:
 
 
 def is_entry_command(text) -> bool:
-    """Whether a message starts with /add, /bought or /used (with or without "@BotName")."""
+    """Whether a message starts with /add, /bought, /used or /stocktake (with or without "@BotName")."""
     return _command(text.strip().partition(" ")[0]) in COMMANDS
 
 

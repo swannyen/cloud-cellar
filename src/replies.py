@@ -4,33 +4,44 @@ from datetime import datetime
 import model
 
 HELP = """\
-One entry per line, starting with what happened:
-+ toilet paper 2x10 $12.90 @fairprice — bought (or: bought, buy, add, /add, /bought)
-- dish soap — finished: none left (or: done, finished, out, /used)
-- toilet paper 2 — used 2 packs, the rest is still there
-low shampoo — on the last one (or: last)
-have rice 2x5kg — what's at home right now
-? detergent 3kg $8.95 @shengsiong — price check (or: price)
+Log one thing per line. Start the line with what happened:
+
++ toilet paper 2x10 $12.90 @fairprice — bought
+- toilet paper 2 — used 2 packs
+- dish soap — ran out, nothing left
+low shampoo — on the last one
+have rice 2x5kg — count what's at home
+? detergent 3kg $8.95 @shengsiong — is this a good price?
+
+Other ways to start a line:
+bought: bought, buy, add, /add, /bought
+used or ran out: done, finished, out, /used
+last one: last
+count: /stocktake
+price check: price
 
 How much:
-2pcs, 10 rolls, 3kg, 500ml: that amount
-2x10rolls: 2 packs of 10, and I remember the pack size
-2, 2pkt, 2 boxes: packs, once I know the pack size. If I don't, I ask instead of guessing.
+2pcs, 10 rolls, 3kg, 500ml — that amount
+2x10rolls — 2 packs of 10, and I remember the pack size
+2, 2pkt, 2 boxes — packs, once I know the pack size. If I don't, I ask instead of guessing.
 
-$12.90 or a plain 12.90 is the total price. The store goes last: @giant, or from/at a store I already know.
+Price and store:
+$12.90 or a plain 12.90 is the total paid.
+The store goes last: @giant, or from/at a store I already know.
 
-Commands:
+See what's there:
 /listitems — what's in the cellar, and how much
 /items — the same items with their IDs and pack sizes
-/add - log a bought item (or: /bought)
-/used - log a finished item
+/listbrands — brands on what we've bought
+/stats — how many lines needed AI this month
+
+Fix or teach:
 /undo — remove your last entry (send it again to go back further)
 /alias loo roll = toilet paper — teach me a name
+/brand kans — teach me a brand
 /set toilet paper pack 10 — set a pack size
 /unit sticks = pcs — teach me a unit word
-/brand kans — teach me a brand
-/listbrands — brands on what we've bought
-/stats — how many lines needed AI this month"""
+When I had to guess the item, tap Same item or New item under my reply."""
 
 FORMAT_HINT = "Didn't catch that. Try: + rice 5kg $12 @ntuc — or /help for all formats."
 FREE_TEXT_FAILED = "I couldn't read that just now. Please send it again, or use the format (/help)."
@@ -42,7 +53,7 @@ SET_USAGE = "Use it like this: /set toilet paper pack 10"
 UNIT_USAGE = "Use it like this: /unit sticks = pcs"
 BRAND_USAGE = "Use it like this: /brand kans"
 NO_BRANDS = "No brands yet. Teach me one with /brand <name>."
-ENTRY_COMMAND_USAGE = "Use it like this: /add rice 5kg $12 @ntuc — or /used dish soap"
+ENTRY_COMMAND_USAGE = "Use it like this: /add rice 5kg $12 @ntuc — or /used dish soap — or /stocktake rice 2x5kg"
 TOO_OLD_TO_CHANGE = "Too old to change — use /alias or /undo"
 ENTRY_WAS_UNDONE = "That entry was undone, so there is nothing to change."
 BUTTON_FAILED = "Sorry, that didn't work — please try again"

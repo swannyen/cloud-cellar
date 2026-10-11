@@ -1,7 +1,7 @@
 """
 Slash commands (PLAN.md §8.4).
 Phase 1a: /listitems, /items, /undo, /alias, /set, /unit, /brand, /listbrands, /stats, /help, /ping.
-(/add, /bought and /used are entries, not commands: handler.py sends them through the format parser.)
+(/add, /bought, /used and /stocktake are entries, not commands: handler.py sends them through the format parser.)
 """
 import re
 

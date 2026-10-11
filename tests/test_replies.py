@@ -165,13 +165,22 @@ class FixedTextTest(unittest.TestCase):
         for example in ("+ toilet paper 2x10 $12.90 @fairprice", "- dish soap", "- toilet paper 2", "low shampoo", "have rice 2x5kg",
                         "? detergent 3kg $8.95 @shengsiong"):
             self.assertIn(example, replies.HELP)
-        for command in ("/listitems", "/items", "/undo", "/alias", "/set", "/unit", "/brand", "/listbrands", "/stats", "/add", "/bought", "/used"):
+        for command in ("/listitems", "/items", "/undo", "/alias", "/set", "/unit", "/brand", "/listbrands", "/stats", "/add", "/bought", "/used", "/stocktake"):
             self.assertIn(command, replies.HELP)
         for rule in ("2pcs", "2x10rolls", "2pkt", "I ask instead of guessing"):
             self.assertIn(rule, replies.HELP)
 
+    def test_help_names_every_keyword_the_parser_accepts(self):
+        for word in [*structured.WORDS, *structured.COMMANDS]:
+            with self.subTest(word=word):
+                self.assertRegex(replies.HELP, rf"(^|[\s,(]){word}($|[\s,)])")
+
+    def test_help_fits_in_one_telegram_message(self):
+        self.assertLess(len(replies.HELP), 4096)
+
     def test_every_example_in_the_help_and_the_hint_really_parses(self):
-        examples = [line.split(" — ")[0] for line in replies.HELP.split("\n\n")[0].splitlines() if " — " in line]
+        format_part = replies.HELP.split("Other ways to start a line:")[0]
+        examples = [line.split(" — ")[0] for line in format_part.splitlines() if " — " in line]
         examples.append(replies.FORMAT_HINT.split("Try: ")[1].split(" — ")[0])
         self.assertEqual(len(examples), 7)
         for example in examples:
@@ -198,9 +207,10 @@ class FixedTextTest(unittest.TestCase):
         ]))
 
     def test_entry_command_usage_examples_really_parse(self):
-        add, used = replies.ENTRY_COMMAND_USAGE.removeprefix("Use it like this: ").split(" — or ")
+        add, used, stocktake = replies.ENTRY_COMMAND_USAGE.removeprefix("Use it like this: ").split(" — or ")
         self.assertEqual(structured.parse_line(add)["action"], "bought")
         self.assertEqual(structured.parse_line(used)["action"], "finished")
+        self.assertEqual(structured.parse_line(stocktake)["action"], "stock_count")
 
     def test_toasts(self):
         self.assertEqual(replies.alias_toast("hand masks", MASKS), "Saved: 'hand masks' = Face masks")

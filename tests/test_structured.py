@@ -60,7 +60,8 @@ class KeywordTest(unittest.TestCase):
                          entry("bought", "toilet paper", packs_of(2, 10), 12.9, "FairPrice"))
 
     def test_symbols_and_entry_commands_are_the_format_used_on_purpose(self):
-        for line in ("+ rice", "-dish soap", "  ? rice 5kg $5", "+", "/add rice", "/used rice", "/Bought@bettynuffbot rice"):
+        for line in ("+ rice", "-dish soap", "  ? rice 5kg $5", "+", "/add rice", "/used rice", "/Bought@bettynuffbot rice",
+                     "/stocktake rice 2"):
             with self.subTest(line=line):
                 self.assertTrue(structured.is_explicit(line))
         for line in ("bought rice", "add rice", "have you eaten", "rice + beans", "", "/items", "/help add"):
@@ -74,6 +75,9 @@ class KeywordTest(unittest.TestCase):
         self.assertEqual(read("/add toilet paper 2x10 $12.90 @fairprice"), read("+ toilet paper 2x10 $12.90 @fairprice"))
         self.assertEqual(read("/bought toilet paper 2x10 $12.90 @fairprice"), read("+ toilet paper 2x10 $12.90 @fairprice"))
         self.assertEqual(read("/used dish soap"), read("- dish soap"))
+        self.assertEqual(read("/stocktake rice 2x5kg"), read("have rice 2x5kg"))
+        self.assertEqual(read("/Stocktake@bettynuffbot pocket tissues 90 packets"),
+                         entry("stock_count", "pocket tissues", packs(90)))
         self.assertEqual(read("/ADD@bettynuffbot rice 5kg $12 from ntuc"),
                          entry("bought", "rice", amount(5000, "g"), 12, "FairPrice"))
         # What was typed is kept, not the symbol it stands for.
@@ -81,7 +85,7 @@ class KeywordTest(unittest.TestCase):
 
     def test_entry_commands_follow_the_same_rules_as_any_other_line(self):
         self.assertIs(read("/add 2 3"), UNREADABLE)
-        for line in ("/add", "/used", "/bought@bettynuffbot"):
+        for line in ("/add", "/used", "/bought@bettynuffbot", "/stocktake"):
             with self.subTest(line=line):
                 self.assertIsNone(read(line))        # nothing after it: the handler answers with how to use it
                 self.assertTrue(structured.is_entry_command(line))
