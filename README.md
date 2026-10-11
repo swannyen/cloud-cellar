@@ -15,7 +15,7 @@ The design and the phase-by-phase build plan are in [PLAN.md](PLAN.md).
 - takes the same entries as commands: `/add` and `/bought` work like `+`, and `/used` like `-`,
 - shows **Same item** / **New item** buttons under any match it had to guess. One tap saves the name for good, or moves the entry to a new item,
 - records the events in DynamoDB, keeps each item's stock and status (`ok`, `low`, `out`) up to date, and confirms in one line per event with the total in the base unit,
-- answers `/items`, `/undo` (repeat it to step back through the last 24 hours), `/alias`, `/set <item> pack <n>`, `/unit <word> = <unit word>`, `/brand <name>`, `/listbrands`, `/stats`, `/help` and `/ping`.
+- answers `/listitems` (what's in the cellar and how much), `/items` (the same items with their IDs), `/undo` (repeat it to step back through the last 24 hours), `/alias`, `/set <item> pack <n>`, `/unit <word> = <unit word>`, `/brand <name>`, `/listbrands`, `/stats`, `/help` and `/ping`.
 
 Set `FREE_TEXT_AI` to `"off"` in [template.yaml](template.yaml) to stop the free-text calls: those lines then get a hint about the format instead. `/stats` shows how many lines needed AI this month.
 

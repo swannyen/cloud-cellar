@@ -19,7 +19,8 @@ How much:
 $12.90 or a plain 12.90 is the total price. The store goes last: @giant, or from/at a store I already know.
 
 Commands:
-/items — what I'm tracking
+/listitems — what's in the cellar, and how much
+/items — the same items with their IDs and pack sizes
 /add - log a bought item (or: /bought)
 /used - log a finished item
 /undo — remove your last entry (send it again to go back further)
@@ -218,6 +219,7 @@ def stats(month, counts) -> str:
 
 
 def items_list(items) -> str:
+    """The /items reply: every tracked item with its ID, unit and pack size, for /alias, /set and the scripts."""
     if not items:
         return NO_ITEMS
     lines = ["Tracked items:"]
@@ -225,14 +227,32 @@ def items_list(items) -> str:
         unit, pack_size = item["base_unit"], item.get("pack_size")
         pack = f", pack of {quantity(pack_size, unit)}" if pack_size else ""
         line = f"{item['item_id']} — {item['name']} ({unit}{pack})"
-        status, stock = item.get("status"), item.get("stock_est")
-        if status in ("ok", "low") and stock:
-            packs = f" ({_packs(stock / pack_size)})" if pack_size else ""
-            line += f": {status}, {quantity(stock, unit)}{packs}"
+        status = item.get("status")
+        if status in ("ok", "low") and item.get("stock_est"):
+            line += f": {status}, {_stock(item)}"
         elif status:
             line += f": {status}"
         lines.append(line)
     return "\n".join(lines)
+
+
+def cellar(items) -> str:
+    """The /listitems reply: what is at home, grouped by how it is doing."""
+    if not items:
+        return NO_ITEMS
+    headings = {"ok": "In the cellar:", "low": "Running low:", "out": "Out:", None: "Not counted yet:"}
+    groups = {heading: [] for heading in headings.values()}
+    for item in sorted(items, key=lambda i: i["name"].lower()):
+        amount = f" — {_stock(item)}" if item.get("stock_est") else ""
+        groups[headings.get(item.get("status"), headings[None])].append(f"• {item['name']}{amount}")
+    return "\n\n".join("\n".join([heading, *lines]) for heading, lines in groups.items() if lines)
+
+
+def _stock(item) -> str:
+    """How much of an item there is: "20 rolls (2 packs)", or just "20 rolls" without a pack size."""
+    amount = quantity(item["stock_est"], item["base_unit"])
+    pack_size = item.get("pack_size")
+    return f"{amount} ({_packs(item['stock_est'] / pack_size)})" if pack_size else amount
 
 
 def money(value) -> str:

@@ -1,4 +1,4 @@
-"""Command tests: /items, /undo, /alias, /set, /unit, /brand, /listbrands, /stats, /help, /ping."""
+"""Command tests: /listitems, /items, /undo, /alias, /set, /unit, /brand, /listbrands, /stats, /help, /ping."""
 import unittest
 from unittest import mock
 
@@ -58,6 +58,17 @@ class SimpleCommandTest(CommandTestCase):
     def test_items_when_empty(self):
         self.table.rows.clear()
         self.assertEqual(commands.handle("/items", MEI, NOW), replies.NO_ITEMS)
+
+    def test_listitems_shows_what_is_in_the_cellar(self):
+        self.assertEqual(commands.handle("/listitems", MEI, NOW),
+                         "Not counted yet:\n• Dishwashing liquid\n• Toilet paper")
+        self.record("+ toilet paper 2x10\n- dish soap")
+        self.assertEqual(commands.handle("/ListItems@bettynuffbot", MEI, NOW),
+                         "In the cellar:\n• Toilet paper — 20 rolls (2 packs)\n\nOut:\n• Dishwashing liquid")
+
+    def test_listitems_when_empty(self):
+        self.table.rows.clear()
+        self.assertEqual(commands.handle("/listitems", MEI, NOW), replies.NO_ITEMS)
 
     def test_items_lists_what_is_tracked(self):
         self.record("+ toilet paper 2x10\n- dish soap")

@@ -1,6 +1,6 @@
 """
 Slash commands (PLAN.md §8.4).
-Phase 1a: /items, /undo, /alias, /set, /unit, /brand, /listbrands, /stats, /help, /ping.
+Phase 1a: /listitems, /items, /undo, /alias, /set, /unit, /brand, /listbrands, /stats, /help, /ping.
 (/add, /bought and /used are entries, not commands: handler.py sends them through the format parser.)
 """
 import re
@@ -26,6 +26,8 @@ def handle(text, sender, now):
         return replies.HELP
     if command == "/items":
         return replies.items_list(store.list_items())
+    if command == "/listitems":
+        return replies.cellar(store.list_items())
     if command == "/undo":
         return _undo(sender, now)
     if command == "/alias":

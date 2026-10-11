@@ -152,7 +152,7 @@ class FixedTextTest(unittest.TestCase):
         for example in ("+ toilet paper 2x10 $12.90 @fairprice", "- dish soap", "low shampoo", "have rice 2x5kg",
                         "? detergent 3kg $8.95 @shengsiong"):
             self.assertIn(example, replies.HELP)
-        for command in ("/items", "/undo", "/alias", "/set", "/unit", "/brand", "/listbrands", "/stats", "/add", "/bought", "/used"):
+        for command in ("/listitems", "/items", "/undo", "/alias", "/set", "/unit", "/brand", "/listbrands", "/stats", "/add", "/bought", "/used"):
             self.assertIn(command, replies.HELP)
         for rule in ("2pcs", "2x10rolls", "2pkt", "I ask instead of guessing"):
             self.assertIn(rule, replies.HELP)
@@ -203,6 +203,40 @@ class FixedTextTest(unittest.TestCase):
             "• AI free-text fallbacks: 2",
             "• Lines I couldn't read: 1",
         ]))
+
+
+class CellarTest(unittest.TestCase):
+    def test_empty(self):
+        self.assertEqual(replies.cellar([]), replies.NO_ITEMS)
+
+    def test_items_are_grouped_by_how_they_are_doing_with_what_is_left(self):
+        items = [
+            dict(TP, status="ok", stock_est=20, pack_size=10),
+            dict(MASKS, status="ok", stock_est=1200, pack_size=200),
+            dict(FACIALS, status="ok", stock_est=17),
+            dict(RICE, status="low", stock_est=1000, pack_size=5000),
+            dict(SOAP, status="out", stock_est=0, pack_size=500),
+            {"item_id": "soy-sauce", "name": "Soy sauce", "base_unit": "ml"},
+        ]
+        self.assertEqual(replies.cellar(items), "\n".join([
+            "In the cellar:",
+            "• Face masks — 1200 pieces (6 packs)",
+            "• Facial masks — 17 pieces",
+            "• Toilet paper — 20 rolls (2 packs)",
+            "",
+            "Running low:",
+            "• Rice — 1 kg (0.2 packs)",
+            "",
+            "Out:",
+            "• Dishwashing liquid",
+            "",
+            "Not counted yet:",
+            "• Soy sauce",
+        ]))
+
+    def test_only_the_groups_that_have_items_are_shown(self):
+        self.assertEqual(replies.cellar([dict(SOAP, status="out", stock_est=0)]), "Out:\n• Dishwashing liquid")
+        self.assertEqual(replies.cellar([dict(TP, status="ok")]), "In the cellar:\n• Toilet paper")
 
 
 class ItemsListTest(unittest.TestCase):
