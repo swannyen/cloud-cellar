@@ -10,6 +10,7 @@ import fakes  # noqa: F401  (puts src/ on sys.path)
 
 import ai
 import claude_api
+import structured
 
 ITEMS = [
     {"item_id": "toilet-paper", "name": "Toilet paper", "base_unit": "roll", "aliases": ["loo roll", "TP"]},
@@ -99,6 +100,35 @@ def ground(text, stores=(), units=None, **fields):
     return entry
 
 
+class BrandOnTheLineTest(unittest.TestCase):
+    """A known brand written on an entry's line is kept even when the model names none."""
+
+    BRANDS = ["na", "半亩花田", "Lux", "Dettol"]
+
+    def brands(self, text, *events):
+        return [entry["brand"] for entry in ai.ground_free_text(list(events), text, brands=self.BRANDS)]
+
+    def test_a_known_brand_in_a_one_line_message(self):
+        self.assertEqual(self.brands("I have 2 bottles of na hair conditioner",
+                                     event(action="stock_count", quantity_text="2 bottles")), ["na"])
+
+    def test_in_a_stocktake_it_is_the_line_the_quantity_came_from(self):
+        text = "Body wash stock take\n1 bottle 半亩花田 pink 400 ml body wash\n1 bottle of 475 ml body wash"
+        self.assertEqual(self.brands(text, event(action="stock_count", quantity_text="1 bottle 半亩花田 pink 400 ml"),
+                                     event(action="stock_count", quantity_text="1 bottle of 475 ml")), ["半亩花田", None])
+
+    def test_chinese_brands_need_no_spaces_but_others_are_whole_words(self):
+        self.assertEqual(self.brands("1瓶半亩花田沐浴露 400ml", event(quantity_text="400ml")), ["半亩花田"])
+        self.assertEqual(self.brands("I have 1 bottle of nard shampoo", event(quantity_text="1 bottle")), [None])
+
+    def test_two_known_brands_on_the_line_could_be_either(self):
+        self.assertEqual(self.brands("Lux or Dettol hand wash, 2 bottles", event(quantity_text="2 bottles")), [None])
+
+    def test_the_models_brand_comes_first(self):
+        self.assertEqual(self.brands("Lux white tea hand wash 2 bottles, na", event(quantity_text="2 bottles", brand="Lux")),
+                         ["Lux"])
+
+
 class GroundingTest(unittest.TestCase):
     """Only what is written in the message survives (PLAN.md §5.4)."""
 
@@ -108,8 +138,8 @@ class GroundingTest(unittest.TestCase):
         self.assertEqual(entry, {
             "action": "bought", "item_id": None, "phrase": "Facial masks", "base_unit": "piece",
             "quantity": {"kind": "amount", "amount": 5, "unit": "piece"}, "total_price": 1.86,
-            "store": "Taobao", "store_is_new": False, "brand": None, "missed": (),
-            "raw": "Facial masks 5 pcs 1.86 from Taobao", "free_text": True,
+            "store": "Taobao", "store_is_new": False, "brand": None, "adds": False, "missed": (),
+            "on": None, "expiry": None, "raw": "Facial masks 5 pcs 1.86 from Taobao", "free_text": True,
         })
 
     def test_store_read_by_code_beats_the_models_answer(self):
@@ -306,6 +336,65 @@ class LooksLikeLogTest(unittest.TestCase):
         for line in ("ok thanks", "what time is dinner?", "haha nice", "see you later", "unfinished business"):
             with self.subTest(line=line):
                 self.assertFalse(ai.looks_like_log(line, ITEMS))
+
+
+class DateGroundingTest(unittest.TestCase):
+    def test_a_date_in_the_message_goes_on_the_entry(self):
+        self.assertEqual(ground("got rice on 15/09/2026")["on"]["written"], "15/09/2026")
+
+    def test_it_goes_on_every_entry_of_the_message(self):
+        event = {"action": "bought", "item_id": None, "item_name": "Rice", "base_unit": "g", "quantity_text": None,
+                 "total_price": None, "store": None, "brand": None}
+        found = ai.ground_free_text([event, {**event, "item_name": "Eggs"}], "got rice and eggs on 15/09/2026")
+        self.assertEqual([entry["on"]["written"] for entry in found], ["15/09/2026", "15/09/2026"])
+
+    def test_no_date_is_none(self):
+        self.assertIsNone(ground("got rice")["on"])
+
+    def test_an_unreadable_date_or_two_dates_are_marked(self):
+        for text in ("got rice on 15 sep", "got rice on 1/9/2026\ngot eggs on 2/9/2026"):
+            with self.subTest(text=text):
+                self.assertEqual(ground(text)["on"], structured.BAD_DATE)
+
+    def test_the_numbers_in_a_date_do_not_back_a_price(self):
+        entry = ground("got rice on 15/09/2026", total_price=15.0)
+        self.assertIsNone(entry["total_price"])
+        self.assertIn("price", entry["missed"])
+
+    def test_the_store_is_still_read_from_a_line_with_a_date(self):
+        self.assertEqual(ground("got rice from taobao on 15/09/2026")["store"], "Taobao")
+
+
+
+class ExpiryGroundingTest(unittest.TestCase):
+    """The expiry is read by code off the entry's own line; the model's copy only fills in."""
+
+    def test_code_reads_it_off_a_one_line_message(self):
+        entry = ground("I have 5 bottles of na hair shampoo of 550ml each that expires Jan 2028",
+                       action="stock_count", quantity_text="5 bottles of na hair shampoo of 550ml each")
+        self.assertEqual(entry["expiry"]["written"], "Jan 2028")
+
+    def test_in_a_stocktake_each_line_has_its_own(self):
+        text = ("Hand wash stock take\n4 bottles 400ml Lux white tea expires July 2028\n"
+                "4 bottles 400ml Lux rose expires Jun 2028\n1 bottle 400 ml Lux rose expires March 2028")
+        lines = [("4 bottles 400ml", "expires July 2028"), ("4 bottles 400ml", "expires Jun 2028"),
+                 ("1 bottle 400 ml", None)]
+        events = [event(action="stock_count", quantity_text=quantity, expiry_text=expiry, brand="Lux")
+                  for quantity, expiry in lines]
+        found = ai.ground_free_text(events, text)
+        self.assertEqual([entry["expiry"]["written"] for entry in found], ["July 2028", "Jun 2028", "March 2028"])
+
+    def test_the_models_expiry_must_be_written_in_the_message(self):
+        entry = ground("got 2 packs of masks", quantity_text="2 packs", expiry_text="expires Dec 2027")
+        self.assertEqual((entry["expiry"], entry["missed"]), (None, ("expiry",)))
+
+    def test_an_expiry_is_not_the_day_it_was_bought(self):
+        entry = ground("got 2 packs of masks that expires on 31/12/2026", quantity_text="2 packs")
+        self.assertEqual((entry["on"], entry["expiry"]["written"]), (None, "31/12/2026"))
+
+    def test_only_purchases_and_counts_have_one(self):
+        entry = ground("used 2 masks, exp 12/27", action="used", quantity_text="2 masks")
+        self.assertIsNone(entry["expiry"])
 
 
 if __name__ == "__main__":

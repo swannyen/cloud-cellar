@@ -3,6 +3,7 @@ import unittest
 
 import fakes  # noqa: F401  (puts src/ on sys.path)
 
+import pricing
 import replies
 import structured
 
@@ -308,7 +309,7 @@ class ItemDetailTest(unittest.TestCase):
             "Body wash (body-wash)",
             "Left: 3.4 L (4.25 packs)",
             "Pack size: 800 ml",
-            "By brand, if the oldest is used first:",
+            "By brand, if what expires first is used first:",
             "• Shokubutsu — 1.8 L",
             "• 半亩花田 — 1.2 L",
             "• no brand — 400 ml",
@@ -376,6 +377,59 @@ class ItemsListTest(unittest.TestCase):
             "rice — Rice (g)",
             "toilet-paper — Toilet paper (roll, pack of 10 rolls): ok, 25 rolls (2.5 packs)",
         ]))
+
+
+class PriceVerdictReplyTest(unittest.TestCase):
+    BEST = {"unit_price": 0.58, "store": "Sheng Siong"}
+
+    def verdict(self, kind, price=0.65, usual=0.7, best=None):
+        return {"kind": kind, "price": price, "best": best or self.BEST, "usual": usual}
+
+    def test_first_price(self):
+        self.assertEqual(replies.price_verdict({"kind": pricing.FIRST, "price": 0.65}, "roll"), "First price recorded.")
+
+    def test_a_new_low_says_what_it_beat(self):
+        self.assertEqual(replies.price_verdict(self.verdict(pricing.BEST, price=0.5), "roll"),
+                         "🔥 Best price yet. It was $0.58/roll at Sheng Siong.")
+
+    def test_matching_or_nearly_matching_the_best_is_not_called_a_new_low(self):
+        for price in (0.58, 0.59):
+            self.assertEqual(replies.price_verdict(self.verdict(pricing.BEST, price=price), "roll"),
+                             "🔥 As good as your best: $0.58/roll at Sheng Siong.")
+
+    def test_good(self):
+        self.assertEqual(replies.price_verdict(self.verdict(pricing.GOOD), "roll"),
+                         "Good price. Best seen: $0.58/roll at Sheng Siong.")
+
+    def test_above_usual_says_what_usual_is(self):
+        self.assertEqual(replies.price_verdict(self.verdict(pricing.ABOVE), "roll"),
+                         "Above usual (usually $0.70/roll). Best seen: $0.58/roll at Sheng Siong.")
+
+    def test_typical(self):
+        self.assertEqual(replies.price_verdict(self.verdict(pricing.TYPICAL), "roll"),
+                         "Typical price. Best seen: $0.58/roll at Sheng Siong.")
+
+    def test_a_best_price_with_no_store_names_none(self):
+        verdict = self.verdict(pricing.TYPICAL, best={"unit_price": 0.58, "store": None})
+        self.assertEqual(replies.price_verdict(verdict, "roll"), "Typical price. Best seen: $0.58/roll.")
+
+    def test_weights_and_volumes_are_per_100(self):
+        verdict = self.verdict(pricing.TYPICAL, best={"unit_price": 0.0027, "store": "FairPrice"})
+        self.assertEqual(replies.price_verdict(verdict, "g"), "Typical price. Best seen: $0.27/100 g at FairPrice.")
+
+    def test_the_verdict_goes_after_the_entry_and_before_the_notes(self):
+        event = ev(qty=2, total_price=1.96, unit_price=0.98, store="Taobao")
+        line = replies.event_line(MASKS, event, read_from="mask", missed=("store",), verdict=self.verdict(pricing.TYPICAL))
+        self.assertEqual(line, "✓ Face masks: bought 2 pieces for $1.96 at Taobao ($0.98/piece). Typical price. "
+                               'Best seen: $0.58/piece at Sheng Siong. (Read "mask" as Face masks.) '
+                               "(Didn't catch the store.)")
+
+    def test_a_price_check_keeps_its_price_noted_wording(self):
+        event = ev("price_check", qty=3000, total_price=8.95, unit_price=0.002983, store="Giant")
+        verdict = self.verdict(pricing.ABOVE, best={"unit_price": 0.0024, "store": "FairPrice"}, usual=0.0025)
+        self.assertEqual(replies.event_line(RICE, event, verdict=verdict),
+                         "Rice: $8.95 for 3 kg = $0.30/100 g at Giant. Price noted. "
+                         "Above usual (usually $0.25/100 g). Best seen: $0.24/100 g at FairPrice.")
 
 
 if __name__ == "__main__":

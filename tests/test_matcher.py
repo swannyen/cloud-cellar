@@ -109,6 +109,11 @@ class BrandTest(unittest.TestCase):
     def test_longest_brand_wins(self):
         self.assertEqual(matcher.split_brand("royal umbrella rice", ["Royal", "Royal Umbrella"]), ("Royal Umbrella", "rice"))
 
+    def test_known_brands_are_the_taught_ones_then_the_recorded_ones_each_once(self):
+        items = ITEMS + [dict(item("shampoo", "Shampoo"), brands=["na", "Nard", "KANS"])]
+        self.assertEqual(matcher.known_brands(items, ["kans", "Lux"]), ["kans", "Lux", "na", "Nard"])
+        self.assertEqual(matcher.known_brands(ITEMS), [])
+
     def test_plain(self):
         self.assertEqual(matcher.plain("  Head & Shoulders' Shampoos "), "head shoulders shampoos")
 

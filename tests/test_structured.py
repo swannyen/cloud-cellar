@@ -1,5 +1,6 @@
 """Message-format parsing tests (PLAN.md §5.1). Pure: no table, no AI."""
 import unittest
+from datetime import date
 
 import fakes  # noqa: F401  (puts src/ on sys.path)
 
@@ -26,9 +27,9 @@ def packs_of(count, size, unit=None):
     return {"kind": "packs_of", "packs": count, "size": size, "unit": unit}
 
 
-def entry(action, phrase, quantity=None, price=None, store=None, store_is_new=False):
+def entry(action, phrase, quantity=None, price=None, store=None, store_is_new=False, on=None, expiry=None):
     return {"action": action, "phrase": phrase, "quantity": quantity, "total_price": price,
-            "store": store, "store_is_new": store_is_new}
+            "store": store, "store_is_new": store_is_new, "on": on, "expiry": expiry}
 
 
 def read(line, **context):
@@ -314,8 +315,23 @@ class StoreTest(unittest.TestCase):
         self.assertEqual(read("+ bread at home"), entry("bought", "bread at home"))
         self.assertEqual(read("+ rice 5kg from giant"), entry("bought", "rice from giant", amount(5000, "g")))
 
+    def test_a_known_store_written_last_after_the_price_or_quantity(self):
+        self.assertEqual(read("/add body wash 3*400g $21.85 taobao"),
+                         entry("bought", "body wash", packs_of(3, 400, "g"), 21.85, "Taobao"))
+        self.assertEqual(read("+ pocket tissue 18x7pcs $1.58 taobao")["store"], "Taobao")
+        self.assertEqual(read("+ facial masks 5 pcs taobao")["store"], "Taobao")
+        self.assertEqual(read("+ rice 5kg $12 ntuc fairprice")["store"], "FairPrice")
+        self.assertEqual(read("+ rice 5kg $12 donki", stores=[DONKI])["store"], "Don Don Donki")
+        self.assertEqual(read("+ milk 2L $3 taobao on 15/9")["store"], "Taobao")
+
+    def test_a_store_name_that_is_not_after_an_amount_stays_in_the_item(self):
+        self.assertEqual(read("+ taobao bag 2pcs"), entry("bought", "taobao bag", amount(2, "piece")))
+        self.assertEqual(read("+ rice taobao")["phrase"], "rice taobao")
+        self.assertEqual(read("+ rice 5kg giant"), entry("bought", "rice giant", amount(5000, "g")))
+
     def test_find_store(self):
         self.assertEqual(structured.find_store("got rice from Taobao"), ("Taobao", False))
+        self.assertEqual(structured.find_store("ordered fabric conditioner 2 bottles 3.10 taobao"), ("Taobao", False))
         self.assertEqual(structured.find_store("got rice @Giant"), ("Giant", True))
         self.assertEqual(structured.find_store("got rice at home"), (None, False))
 
@@ -440,6 +456,20 @@ class FreeTextQuantityTest(unittest.TestCase):
             with self.subTest(text=text):
                 self.assertEqual(structured.read_quantity(text), expected)
 
+    def test_a_weight_or_volume_straight_after_the_count_is_the_size_on_the_label(self):
+        self.assertEqual(structured.read_quantity("4 bottles 400ml Lux white tea"), packs_of(4, 400, "ml"))
+        self.assertEqual(structured.read_quantity("2 bottles 1L"), packs_of(2, 1000, "ml"))
+        self.assertEqual(structured.read_quantity("2 bags 5kg"), packs_of(2, 5000, "g"))
+        # The brand can come between, the way the household writes a stocktake.
+        self.assertEqual(structured.read_quantity("2 bottles vete 800ml"), packs_of(2, 800, "ml"))
+        self.assertEqual(structured.read_quantity("2 bottles 半亩花田 400 ml body wash"), packs_of(2, 400, "ml"))
+        # Rolls or pieces after a count could be the total, and so could a size written before the count.
+        for text in ("2 packs 10 rolls", "2 packs toilet paper 10 rolls", "10kg 2 bags"):
+            with self.subTest(text=text):
+                self.assertIsNone(structured.read_quantity(text))
+        # The format is written to be exact, so it doesn't read it this way.
+        self.assertEqual(structured.parse_line("+ hand wash 4 bottles 400ml"), structured.UNREADABLE)
+
     def test_one_named_pack(self):
         self.assertEqual(structured.read_quantity("1 bottle of Kikkoman soy sauce 600ml"), packs_of(1, 600, "ml"))
         self.assertEqual(structured.read_quantity("pack of 10 rolls"), packs_of(1, 10, "roll"))
@@ -487,6 +517,216 @@ class MessageTest(unittest.TestCase):
 
     def test_numbers_in_text(self):
         self.assertEqual(structured.numbers_in("2 packs for $12.90, 10 rolls each"), [2.0, 12.9, 10.0])
+
+
+class DateTest(unittest.TestCase):
+    """The one date format: "on" and day/month/year, wherever it is on the line (PLAN.md §5.1)."""
+
+    SEP_15 = {"day": 15, "month": 9, "year": 2026, "written": "15/09/2026"}
+
+    def test_the_forms_of_the_date(self):
+        cases = {
+            "+ rice on 15/09/2026": {"day": 15, "month": 9, "year": 2026, "written": "15/09/2026"},
+            "+ rice on 15/9/26": {"day": 15, "month": 9, "year": 26, "written": "15/9/26"},
+            "+ rice on 15/9": {"day": 15, "month": 9, "year": None, "written": "15/9"},
+            "+ rice ON 15/09/2026": {"day": 15, "month": 9, "year": 2026, "written": "15/09/2026"},
+        }
+        for line, on in cases.items():
+            with self.subTest(line=line):
+                self.assertEqual(read(line), entry("bought", "rice", on=on))
+
+    def test_no_date_is_none(self):
+        self.assertIsNone(read("+ rice")["on"])
+
+    def test_it_can_go_anywhere_on_the_line_even_after_the_store(self):
+        expected = entry("bought", "rice", amount(5000, "g"), 12, "FairPrice", on=self.SEP_15)
+        for line in (
+            "+ rice 5kg $12 @ntuc on 15/09/2026",
+            "+ rice 5kg $12 on 15/09/2026 @ntuc",
+            "+ on 15/09/2026 rice 5kg $12 @ntuc",
+            "+ rice on 15/09/2026 5kg $12 from ntuc",
+            "/add rice 5kg $12 from ntuc on 15/09/2026",
+            "+ rice 5kg $12 @ntuc on 15/09/2026.",
+        ):
+            with self.subTest(line=line):
+                self.assertEqual(read(line), expected)
+
+    def test_a_new_store_is_read_without_the_date(self):
+        self.assertEqual(read("+ rice @don don donki on 15/09/2026"),
+                         entry("bought", "rice", store="Don Don Donki", store_is_new=True, on=self.SEP_15))
+
+    def test_every_kind_of_entry_can_carry_one(self):
+        cases = {"- rice on 15/09/2026": "finished", "- rice 2 on 15/09/2026": "used", "have rice 2 on 15/09/2026": "stock_count",
+                 "low rice on 15/09/2026": "opened_last", "? rice 5kg $12 on 15/09/2026": "price_check"}
+        for line, action in cases.items():
+            with self.subTest(line=line):
+                result = read(line)
+                self.assertEqual((result["action"], result["phrase"], result["on"]), (action, "rice", self.SEP_15))
+
+    def test_on_without_a_date_is_an_item_word(self):
+        self.assertEqual(read("+ clip on earrings $5"), entry("bought", "clip on earrings", price=5))
+        self.assertEqual(read("+ rice on sale $5"), entry("bought", "rice on sale", price=5))
+
+    def test_anything_date_like_outside_the_format_is_refused(self):
+        for line in (
+            "+ rice $5 15/9",
+            "+ rice $5 15/09/2026",
+            "+ rice $5 on 15/9/202",
+            "+ rice $5 on 15 sep",
+            "+ rice $5 15th september",
+            "+ rice $5 sep 15",
+            "+ rice $5 on 15-09-2026",
+            "+ rice $5 on 15.09.26",
+            "+ rice $5 on 2026-09-15",
+            "+ rice $5 on 1/9/2026 on 2/9/2026",
+            "/add rice $5 15/9",
+            "+ rice $5 @taobao 15/9",
+            "+ rice $5 @taobao 15/09/2026",
+            "+ rice $5 @taobao on 15 sep",
+            "+ rice $5 @15/09/2026",
+        ):
+            with self.subTest(line=line):
+                self.assertEqual(read(line), structured.BAD_DATE)
+
+    def test_the_same_date_twice_is_still_one_date(self):
+        self.assertEqual(read("+ rice on 15/09/2026 on 15/09/2026")["on"], self.SEP_15)
+
+    def test_quantities_prices_and_names_are_not_taken_for_dates(self):
+        for line in (
+            "+ rice 3kg $1.86",
+            "+ rice 1.86",
+            "+ toilet paper 2x10",
+            "+ body wash 3*400g $21.85",
+            "+ shampoo 500ml x2",
+            "+ tissues 3-ply 2",
+            "+ 10-roll toilet paper",
+            "+ 2 decorations",
+            "+ may chang soap $5",
+        ):
+            with self.subTest(line=line):
+                self.assertNotEqual(read(line), structured.BAD_DATE)
+
+    def test_a_store_can_look_like_a_date(self):
+        self.assertEqual(read("+ milk $2 @7/11")["store"], "7/11")
+        result = read("+ milk $2 @7/11 on 15/09/2026")
+        self.assertEqual((result["store"], result["on"]), ("7/11", self.SEP_15))
+
+    def test_a_date_after_the_store_does_not_become_part_of_its_name(self):
+        result = read("+ rice $5 @taobao on 15/09/2026")
+        self.assertEqual((result["store"], result["store_is_new"], result["on"]), ("Taobao", False, self.SEP_15))
+
+    def test_a_line_with_no_keyword_can_carry_one(self):
+        result = structured.parse_bought("facial masks 5 pcs 1.86 from taobao on 15/09/2026")
+        self.assertEqual((result["phrase"], result["store"], result["on"]), ("facial masks", "Taobao", self.SEP_15))
+        self.assertEqual(structured.parse_bought("facial masks 5 pcs 1.86 15/9"), structured.BAD_DATE)
+
+    def test_find_store_ignores_the_date(self):
+        self.assertEqual(structured.find_store("got rice from taobao on 15/09/2026"), ("Taobao", False))
+
+    def test_split_date_gives_the_rest(self):
+        self.assertEqual(structured.split_date("rice $5 on 15/09/2026 @ntuc"), ("rice $5 @ntuc", self.SEP_15))
+        self.assertEqual(structured.split_date("rice $5"), ("rice $5", None))
+
+
+class ResolveDateTest(unittest.TestCase):
+    TODAY = date(2026, 11, 3)
+
+    def resolve(self, day, month, year=None):
+        return structured.resolve_date({"day": day, "month": month, "year": year, "written": ""}, self.TODAY)
+
+    def test_day_first(self):
+        self.assertEqual(self.resolve(3, 9, 2026), date(2026, 9, 3))
+
+    def test_a_short_year(self):
+        self.assertEqual(self.resolve(15, 9, 26), date(2026, 9, 15))
+
+    def test_with_no_year_it_is_the_last_time_that_date_came_round(self):
+        self.assertEqual(self.resolve(15, 9), date(2026, 9, 15))
+        self.assertEqual(self.resolve(5, 12), date(2025, 12, 5))
+        self.assertEqual(self.resolve(3, 11), self.TODAY)
+
+    def test_today_is_fine_and_tomorrow_is_not(self):
+        self.assertEqual(self.resolve(3, 11, 2026), self.TODAY)
+        self.assertEqual(self.resolve(4, 11, 2026), structured.FUTURE_DATE)
+
+    def test_dates_that_do_not_exist(self):
+        for day, month, year in ((31, 2, 2026), (9, 15, 2026), (0, 5, 2026), (9, 15, None), (29, 2, 2026)):
+            with self.subTest(day=day, month=month):
+                self.assertEqual(self.resolve(day, month, year), structured.BAD_DATE)
+
+    def test_a_leap_day_needs_its_year(self):
+        self.assertEqual(self.resolve(29, 2, 2024), date(2024, 2, 29))
+        self.assertEqual(self.resolve(29, 2), structured.BAD_DATE)
+
+    def test_a_date_already_found_unreadable_stays_so(self):
+        self.assertEqual(structured.resolve_date(structured.BAD_DATE, self.TODAY), structured.BAD_DATE)
+
+
+
+class ExpiryTest(unittest.TestCase):
+    """Expiry dates (PLAN.md §8.6): read before everything else on a line, resolved against a day."""
+
+    TODAY = date(2026, 11, 3)
+
+    def expires(self, text, today=TODAY):
+        expiry = structured.split_expiry(text)[1]
+        return expiry if expiry in (None, structured.BAD_EXPIRY) else structured.resolve_expiry(expiry, today)
+
+    def test_the_ways_the_household_writes_it(self):
+        cases = {
+            "4 bottles of Lux hand wash, 400g each that expires in April 2028": date(2028, 4, 1),
+            "1 bottle 400 ml Lux rose expires March 2028": date(2028, 3, 1),
+            "2 Shokubutsu refill packs 500 ml each expire Feb 2028": date(2028, 2, 1),
+            "1 bottle 400ml expiring jan-2028": date(2028, 1, 1),
+        }
+        for text, expected in cases.items():
+            with self.subTest(text=text):
+                self.assertEqual(self.expires(text), expected)
+
+    def test_the_forms_in_the_plan(self):
+        cases = {
+            "exp 31/12/2026": date(2026, 12, 31), "exp 31/12/26": date(2026, 12, 31), "exp 2026-12-31": date(2026, 12, 31),
+            "exp 31/12": date(2026, 12, 31), "exp 31 dec": date(2026, 12, 31), "exp 15th Nov 2027": date(2027, 11, 15),
+            "exp 12/27": date(2027, 12, 1), "exp 01/2028": date(2028, 1, 1), "exp dec 2027": date(2027, 12, 1),
+            "exp dec": date(2026, 12, 1), "exp 5d": date(2026, 11, 8), "exp 2w": date(2026, 11, 17),
+            "exp 3m": date(2027, 2, 3), "best before 15 nov": date(2026, 11, 15), "use by: 1/12": date(2026, 12, 1),
+            "expires on 31/12/2026": date(2026, 12, 31),
+        }
+        for text, expected in cases.items():
+            with self.subTest(text=text):
+                self.assertEqual(self.expires(text), expected)
+
+    def test_a_date_with_no_year_is_the_next_one_unless_it_was_in_the_last_two_weeks(self):
+        self.assertEqual(self.expires("exp 5/1"), date(2027, 1, 5))
+        self.assertEqual(self.expires("exp 1/11"), date(2026, 11, 1))     # two days ago: already past
+        self.assertEqual(self.expires("exp 1/10"), date(2027, 10, 1))
+        # A month on its own is its 1st, but whether it is this year's goes by the month's last day.
+        self.assertEqual(self.expires("exp oct"), date(2026, 10, 1))
+        self.assertEqual(self.expires("exp nov"), date(2026, 11, 1))
+        self.assertEqual(self.expires("exp sep"), date(2027, 9, 1))
+
+    def test_what_cannot_be_read(self):
+        self.assertEqual(self.expires("+ milk exp soon"), structured.BAD_EXPIRY)
+        self.assertEqual(self.expires("+ milk exp 31/12 exp 1/1"), structured.BAD_EXPIRY)
+        self.assertEqual(self.expires("+ milk exp 31/02/2027"), structured.BAD_EXPIRY)
+        self.assertIsNone(self.expires("+ expresso beans 1kg"))
+        self.assertEqual(structured.parse_line("+ milk 2L exp soon"), structured.BAD_EXPIRY)
+
+    def test_on_a_line_it_comes_off_before_the_date_and_the_store(self):
+        self.assertEqual(read("+ milk 2L $3 @ntuc exp 31/12"),
+                         entry("bought", "milk", amount(2000, "ml"), 3, "FairPrice",
+                               expiry={"kind": "ab", "values": (31, 12), "written": "31/12"}))
+        line = read("+ rice 5kg expires on 31/12/2026 on 15/09/2026")
+        self.assertEqual((line["on"]["written"], line["expiry"]["written"]), ("15/09/2026", "31/12/2026"))
+        self.assertEqual(structured.find_store("got milk @ntuc exp 31/12"), ("FairPrice", False))
+
+    def test_read_from_free_text_with_or_without_its_word(self):
+        for text in ("expires Jan 2028", "Jan 2028", "exp jan 2028"):
+            with self.subTest(text=text):
+                self.assertEqual(structured.read_expiry(text)["values"], (1, 2028))
+        self.assertIsNone(structured.read_expiry("soon"))
+        self.assertEqual(structured.strip_expiries("1 bottle that expires on 31/12/2026\nexp 12/27 too"),
+                         "1 bottle that\ntoo")
 
 
 if __name__ == "__main__":

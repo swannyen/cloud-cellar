@@ -42,7 +42,14 @@ class NormaliseTest(unittest.TestCase):
             "total_price": 12.9,
             "store": "FairPrice",
             "brand": None,
+            "adds": False,
+            "expiry_text": None,
         })
+
+    def test_only_a_count_adds_to_an_earlier_count(self):
+        self.assertTrue(normalise_one(action="stock_count", adds_to_count=True)["adds"])
+        self.assertFalse(normalise_one(action="bought", adds_to_count=True)["adds"])
+        self.assertFalse(normalise_one(action="stock_count", adds_to_count="yes")["adds"])
 
     def test_enum_values_are_matched_case_insensitively(self):
         event = normalise_one(action="Bought", base_unit="ROLL")
@@ -105,6 +112,11 @@ class PromptTest(unittest.TestCase):
             "finished the dish soap",
         ]))
 
+    def test_user_content_lists_the_known_brands(self):
+        items = self.ITEMS + [{"item_id": "shampoo", "name": "Shampoo", "base_unit": "ml", "aliases": [], "brands": ["na"]}]
+        content = ai.free_text_content("I have 2 bottles of na hair conditioner", "Mei", items, date(2026, 11, 3), ["Lux"])
+        self.assertIn("shampoo | Shampoo | ml |\nKnown brands: Lux, na\n\nMessage:", content)
+
     def test_user_content_with_no_items(self):
         content = ai.free_text_content("hi", "Mei", [], date(2026, 10, 9))
         self.assertIn("(none yet)", content)
@@ -118,14 +130,15 @@ class PromptTest(unittest.TestCase):
     def test_every_example_in_the_system_prompt_is_valid_for_its_own_known_items(self):
         examples = ai.FREE_TEXT_PROMPT.split("## Examples")[1].split("\n\n")[2:]
         self.assertGreaterEqual(len(examples), 10)
-        message_text = lambda lines: lines[-2].removeprefix("Message: ")  # noqa: E731
         fields = set(ai.FREE_TEXT_SCHEMA["properties"]["events"]["items"]["required"])
         for example in examples:
             lines = example.strip().splitlines()
-            with self.subTest(example=lines[-2][:60]):
+            # A message can run over several lines, from "Message: " to the line before "Output: ".
+            start = next(index for index, line in enumerate(lines) if line.startswith("Message: "))
+            message = "\n".join(lines[start:-1]).removeprefix("Message: ")
+            with self.subTest(example=message[:60]):
                 self.assertTrue(lines[0].startswith("Known items"))
-                self.assertTrue(lines[-2].startswith("Message: "))
-                known = {line.split(" | ")[0] for line in lines[1:-2] if " | " in line}
+                known = {line.split(" | ")[0] for line in lines[1:start] if " | " in line}
                 data = json.loads(lines[-1].removeprefix("Output: "))
                 self.assertEqual(set(data), {"events", "clarify"})
                 for event in data["events"]:
@@ -134,7 +147,7 @@ class PromptTest(unittest.TestCase):
                 kept, _ = ai.normalise_free_text(data, known)
                 self.assertEqual(len(kept), len(data["events"]))
                 # The examples have to practise what the prompt asks: everything copied from the message.
-                grounded = ai.ground_free_text(kept, message_text(lines))
+                grounded = ai.ground_free_text(kept, message)
                 self.assertEqual(len(grounded), len(kept))
                 for entry, event in zip(grounded, kept):
                     self.assertEqual(entry["missed"], ())

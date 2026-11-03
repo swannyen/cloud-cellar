@@ -64,6 +64,13 @@ class StoreTest(unittest.TestCase):
         self.assertEqual([event["sk"][:10] for event in store.list_events("rice")],
                          ["2026-10-01", "2026-10-02", "2026-10-03"])
 
+    def test_the_lines_of_one_message_come_back_in_the_order_they_were_written(self):
+        for line in (0, 2, 10, 1):
+            store.put_event("rice", f"2026-11-03T04:24:25Z#5#{line}", {"action": "stock_count"})
+        store.put_event("rice", "2026-11-03T04:24:24Z#4#11", {"action": "bought"})
+        self.assertEqual([event["sk"][-5:] for event in store.list_events("rice")],
+                         ["#4#11", "Z#5#0", "Z#5#1", "Z#5#2", "#5#10"])
+
     def test_recent_events_are_kept_per_user_oldest_first_with_a_day_to_live(self):
         before = int(time.time())
         self.assertEqual(store.list_recent_events(42), [])

@@ -2,7 +2,7 @@
 
 Flow is PLAN.md §4.1. Phase 1 routes commands, chat messages (the pipeline in
 PLAN.md §5: format first, AI last) and the match-confirmation buttons; the
-nudge buttons arrive in Phase 2.
+nudge buttons arrive in Phase 3.
 """
 import base64
 import hmac
@@ -143,18 +143,24 @@ def _handle_chat(update_id, text, sender, sent_at):
     free_text = []   # lines for the AI fallback
     attempts = 0     # how many of those started with a format keyword
     rejected = 0     # lines that get the format hint
+    bad_dates = 0    # lines that get the date hint
+    bad_expiries = 0  # lines that get the expiry hint
     for line in filter(None, (line.strip() for line in text.splitlines())):
         kind, entry = _read_line(line, items, lookups)
         if kind == "entry":
             entries.append(entry)
         elif kind == "hint":
             rejected += 1
+        elif kind == "bad date":
+            bad_dates += 1
+        elif kind == "bad expiry":
+            bad_expiries += 1
         elif kind == "attempt":
             free_text.append(line)
             attempts += 1
         elif kind == "free text":
             free_text.append(line)
-    if not entries and not free_text and not rejected:
+    if not entries and not free_text and not rejected and not bad_dates and not bad_expiries:
         return None, []  # ordinary chat
 
     counts = Counter()
@@ -176,16 +182,20 @@ def _handle_chat(update_id, text, sender, sent_at):
             at=apply.iso_utc(sent_at),
         )
         counts.update(applied)
-    counts["lines_rejected"] += rejected
+    counts["lines_rejected"] += rejected + bad_dates + bad_expiries
     logger.info("update %s: %s, %s", update_id, [entry["action"] for entry in entries], dict(counts))
     _count(sent_at, counts)
+    if bad_dates:
+        notes.append(replies.DATE_HINT)
+    if bad_expiries and replies.EXPIRY_HINT not in lines:
+        notes.append(replies.EXPIRY_HINT)
     if rejected:
         notes.append(replies.FORMAT_HINT)
     return "\n".join(lines + notes) or None, rows
 
 
 def _read_line(line, items, lookups):
-    """Sort one line: ("entry", the entry), or ("hint" / "attempt" / "free text" / None, None).
+    """Sort one line: ("entry", the entry), or ("hint" / "bad date" / "bad expiry" / "attempt" / "free text" / None, None).
 
     "attempt" is a line that starts with a keyword but can't be read as the format;
     like "free text", it goes to the AI fallback.
@@ -196,6 +206,10 @@ def _read_line(line, items, lookups):
             return "entry", result
         if result is None:
             return None, None  # a keyword with nothing after it: ordinary chat
+        if result == structured.BAD_DATE:
+            return "bad date", None
+        if result == structured.BAD_EXPIRY:
+            return "bad expiry", None
         # "+ 2 3" has no words for the AI to work with either.
         return ("attempt" if structured.has_words(line) else "hint"), None
     if any(character.isdigit() for character in line):
@@ -212,7 +226,7 @@ def _read_free_text(update_id, text, sender, items, lookups, sent_at, counts):
     """Ask the AI fallback what the free-text lines say. Returns (entries, lines to add to the reply)."""
     today = datetime.fromtimestamp(sent_at, apply.SGT).date()
     try:
-        parsed = ai.parse_free_text(text, sender["name"], items, today)
+        parsed = ai.parse_free_text(text, sender["name"], items, today, lookups.brands)
     except claude_api.ClaudeError:
         # Lines in the format are still recorded.
         logger.exception("update %s: free-text fallback failed", update_id)
@@ -223,7 +237,8 @@ def _read_free_text(update_id, text, sender, items, lookups, sent_at, counts):
         update_id, parsed.usage.get("input_tokens"), parsed.usage.get("output_tokens"),
     )
     # Only what is written in the message survives: see ai.ground_free_text.
-    entries = ai.ground_free_text(parsed.events, text, lookups.stores, lookups.units)
+    brands = matcher.known_brands(items, lookups.brands)
+    entries = ai.ground_free_text(parsed.events, text, lookups.stores, lookups.units, brands)
     notes = [parsed.clarify] if parsed.clarify else []
     shared = ai.shared_totals(parsed.events, text)
     if shared:

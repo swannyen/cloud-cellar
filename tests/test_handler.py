@@ -8,11 +8,13 @@ import json
 import os
 import time
 import unittest
+from datetime import datetime
 from unittest import mock
 
 from fakes import FakeTable, no_ai
 
 import ai
+import apply
 import claude_api
 import config
 import handler
@@ -201,7 +203,7 @@ class CommandRouteTest(HandlerTestCase):
         self.call(message_update(update_id=1, text="/alias loo roll = toilet paper"))
         self.call(message_update(update_id=2, text="/stats"))
         self.assertEqual(self.replies()[0], 'Got it: "loo roll" now means Toilet paper.')
-        self.assertIn("October 2026 so far:", self.replies()[1])
+        self.assertIn(datetime.now(apply.SGT).strftime("%B %Y so far:"), self.replies()[1])
 
     def test_unknown_command_gets_no_reply(self):
         self.call(message_update(text="/somethingelse"))
@@ -233,7 +235,7 @@ class FormatRouteTest(HandlerTestCase):
         self.call(message_update(update_id=5, text="+ toilet paper 2x10 $12.90 @fairprice\n- dish soap"))
         self.send_message.assert_called_once_with(
             GROUP_CHAT,
-            "✓ Toilet paper: bought 2 packs × 10 rolls (20 rolls) for $12.90 at FairPrice ($0.65/roll).\n"
+            "✓ Toilet paper: bought 2 packs × 10 rolls (20 rolls) for $12.90 at FairPrice ($0.65/roll). First price recorded.\n"
             "✓ Dishwashing liquid: marked finished.",
             reply_to=MESSAGE_ID,
         )
@@ -277,7 +279,7 @@ class FormatRouteTest(HandlerTestCase):
         self.call(message_update(update_id=8, text="+ loo roll 1x10 $6"))
         self.send_message.assert_called_once_with(
             GROUP_CHAT,
-            '✓ Toilet paper: bought 1 pack of 10 rolls for $6.00 ($0.60/roll). (Read "loo roll" as Toilet paper.)',
+            '✓ Toilet paper: bought 1 pack of 10 rolls for $6.00 ($0.60/roll). First price recorded. (Read "loo roll" as Toilet paper.)',
             reply_to=MESSAGE_ID,
             buttons=[[("Same item", "m:same:8:0"), ("New item: Loo roll", "m:new:8:0")]],
         )
@@ -288,7 +290,7 @@ class FormatRouteTest(HandlerTestCase):
         self.call(message_update(update_id=1, text="/brand kans"))
         self.call(message_update(update_id=2, text="bought 2 kans facial masks for 1.96 from Taobao"))
         self.send_message.assert_called_with(
-            GROUP_CHAT, "✓ Facial masks: bought 2 packs × 5 pieces (10 pieces) for $1.96 at Taobao ($0.20/piece).",
+            GROUP_CHAT, "✓ Facial masks: bought 2 packs × 5 pieces (10 pieces) for $1.96 at Taobao ($0.20/piece). First price recorded.",
             reply_to=MESSAGE_ID,
         )
         self.match_item.assert_not_called()
@@ -298,7 +300,7 @@ class FormatRouteTest(HandlerTestCase):
         store.save_unit("sticks", "pcs", "Mei")
         store.save_store("qoo10", "Qoo10", "2026-10-01T00:00:00Z")
         self.call(message_update(text="+ 2 sticks facial masks $1.96 from qoo10"))
-        self.assertEqual(self.replies(), ["✓ Facial masks: bought 2 pieces for $1.96 at Qoo10 ($0.98/piece)."])
+        self.assertEqual(self.replies(), ["✓ Facial masks: bought 2 pieces for $1.96 at Qoo10 ($0.98/piece). First price recorded."])
 
     def test_symbol_line_the_ai_does_not_take_for_a_product_is_answered_not_dropped(self):
         self.match_item.side_effect = None
@@ -349,7 +351,7 @@ class EntryCommandTest(HandlerTestCase):
         self.call(message_update(update_id=1, text="+ toilet paper 2x10 $12.90 @fairprice"))
         self.call(message_update(update_id=2, text="/add toilet paper 2x10 $12.90 @fairprice"))
         self.call(message_update(update_id=3, text="/bought@bettynuffbot toilet paper 2x10 $12.90 @fairprice"))
-        self.assertEqual(self.replies(), ["✓ Toilet paper: bought 2 packs × 10 rolls (20 rolls) for $12.90 at FairPrice ($0.65/roll)."] * 3)
+        self.assertEqual(self.replies(), ["✓ Toilet paper: bought 2 packs × 10 rolls (20 rolls) for $12.90 at FairPrice ($0.65/roll). First price recorded."] + ["✓ Toilet paper: bought 2 packs × 10 rolls (20 rolls) for $12.90 at FairPrice ($0.65/roll). 🔥 As good as your best: $0.65/roll at FairPrice."] * 2)
         events = store.list_events("toilet-paper")
         self.assertEqual([event["qty"] for event in events], [20, 20, 20])
         self.assertEqual(events[1]["raw_text"], "/add toilet paper 2x10 $12.90 @fairprice")
@@ -414,7 +416,7 @@ class NoKeywordTest(HandlerTestCase):
 
     def test_known_item_with_a_price_is_read_as_bought_without_ai(self):
         self.call(message_update(text="facial masks 5 pcs 1.86 from taobao"))
-        self.assertEqual(self.replies(), ["✓ Facial masks: bought 5 pieces for $1.86 at Taobao ($0.37/piece)."])
+        self.assertEqual(self.replies(), ["✓ Facial masks: bought 5 pieces for $1.86 at Taobao ($0.37/piece). First price recorded."])
         event, = store.list_events("facial-masks")
         self.assertEqual((event["parse_path"], event["raw_text"]), ("structured", "facial masks 5 pcs 1.86 from taobao"))
         self.assertEqual(self.stats(), {"lines_structured": 1})
@@ -440,7 +442,7 @@ class NoKeywordTest(HandlerTestCase):
     def test_taught_brand_in_front_of_a_known_item_is_still_a_purchase(self):
         store.save_brand("kans", "kans", "Mei")
         self.call(message_update(text="Kans facial masks 5 pcs 1.86 from taobao"))
-        self.assertEqual(self.replies(), ["✓ Facial masks: bought 5 pieces for $1.86 at Taobao ($0.37/piece)."])
+        self.assertEqual(self.replies(), ["✓ Facial masks: bought 5 pieces for $1.86 at Taobao ($0.37/piece). First price recorded."])
         self.assertEqual(store.list_events("facial-masks")[0]["brand"], "kans")
         self.parse_free_text.assert_not_called()
 
@@ -479,29 +481,40 @@ class FreeTextRouteTest(HandlerTestCase):
         self.call(message_update(update_id=1, text=self.FREE_TEXT))
         self.call(message_update(update_id=2, text="+ toilet paper 2x10 $12.90 @fairprice"))
         said, typed = self.replies()
-        self.assertEqual(said, typed)
-        self.assertEqual(said, "✓ Toilet paper: bought 2 packs × 10 rolls (20 rolls) for $12.90 at FairPrice ($0.65/roll).")
+        self.assertEqual(said, "✓ Toilet paper: bought 2 packs × 10 rolls (20 rolls) for $12.90 at FairPrice ($0.65/roll). First price recorded.")
+        self.assertEqual(typed, "✓ Toilet paper: bought 2 packs × 10 rolls (20 rolls) for $12.90 at FairPrice ($0.65/roll). 🔥 As good as your best: $0.65/roll at FairPrice.")
         first, second = store.list_events("toilet-paper")
         self.assertEqual((first["parse_path"], second["parse_path"]), ("ai_full", "structured"))
         self.assertEqual((first["qty"], first["unit_price"], first["store"]), (second["qty"], second["unit_price"], second["store"]))
         self.assertEqual(self.stats(), {"ai_full_calls": 1, "lines_structured": 1})
         self.match_item.assert_not_called()
 
+    def test_a_brand_the_bot_knows_is_kept_even_when_the_model_misses_it(self):
+        self.add_item("shampoo", "Shampoo", "ml", brands=["na"])
+        self.add_item("conditioner", "Conditioner", "ml", pack_size=500, pack_size_set_at="2026-10-01T00:00:00Z")
+        self.ai_reads(free_event(action="stock_count", item_id="conditioner", item_name="Conditioner", base_unit="ml",
+                                 quantity_text="2 bottles"))
+        self.call(message_update(text="I have 2 bottles of na hair conditioner"))
+        event, = store.list_events("conditioner")
+        self.assertEqual((event["brand"], event["qty"]), ("na", 1000))
+        self.assertEqual(self.parse_free_text.call_args.args[4], [])  # taught brands; the item's are added in the prompt
+
     def test_fallback_gets_the_text_sender_items_and_singapore_date(self):
         self.ai_reads()
         # 2026-10-09 16:30 UTC is already 10 October in Singapore.
         self.call(message_update(text="rice finish already", date=1791563400))
-        text, sender_name, items, today = self.parse_free_text.call_args.args
+        text, sender_name, items, today, brands = self.parse_free_text.call_args.args
         self.assertEqual((text, sender_name), ("rice finish already", "Mei"))
         self.assertEqual([item["item_id"] for item in items], ["face-masks", "rice", "toilet-paper"])
         self.assertEqual(today.isoformat(), "2026-10-10")
+        self.assertEqual(brands, [])  # none taught with /brand
 
     def test_store_comes_from_the_message_not_from_the_model(self):
         # The model answers Shopee; the message says Taobao.
         self.ai_reads(free_event(item_id="face-masks", item_name="face masks", base_unit="piece",
                                  quantity_text="5 pcs", total_price=1.86, store="Shopee"))
         self.call(message_update(text="got Face Masks 5 pcs for $1.86 from Taobao"))
-        self.assertEqual(self.replies(), ["✓ Face masks: bought 5 pieces for $1.86 at Taobao ($0.37/piece)."])
+        self.assertEqual(self.replies(), ["✓ Face masks: bought 5 pieces for $1.86 at Taobao ($0.37/piece). First price recorded."])
         self.assertEqual(store.list_events("face-masks")[0]["store"], "Taobao")
 
     def test_numbers_the_model_made_up_are_dropped_and_said(self):
@@ -516,7 +529,7 @@ class FreeTextRouteTest(HandlerTestCase):
         self.call(message_update(update_id=4, text="HAND masks 10 pcs $1.45 from Taobao"))
         self.send_message.assert_called_once_with(
             GROUP_CHAT,
-            '✓ Face masks: bought 10 pieces for $1.45 at Taobao ($0.14/piece). (Read "HAND masks" as Face masks.)',
+            '✓ Face masks: bought 10 pieces for $1.45 at Taobao ($0.14/piece). First price recorded. (Read "HAND masks" as Face masks.)',
             reply_to=MESSAGE_ID,
             buttons=[[("Same item", "m:same:4:0"), ("New item: Hand masks", "m:new:4:0")]],
         )
@@ -599,6 +612,47 @@ class FreeTextRouteTest(HandlerTestCase):
             self.assertTrue(config.free_text_ai())
 
 
+class DateRouteTest(HandlerTestCase):
+    """The date on a line, from the message to the reply. Messages here were sent on 9 Oct 2026."""
+
+    def setUp(self):
+        super().setUp()
+        self.add_item("toilet-paper", "Toilet paper", "roll", pack_size=10)
+        patch = mock.patch.object(handler.ai, "parse_free_text")
+        self.parse_free_text = patch.start()
+        self.addCleanup(patch.stop)
+
+    def test_add_with_a_date(self):
+        self.call(message_update(text="/add toilet paper 2x10 $12.90 @fairprice on 15/09/2026"))
+        self.assertIn("on Tue 15 Sep 2026", self.replies()[0])
+        self.assertEqual(store.list_events("toilet-paper")[0]["at"], "2026-09-15T04:00:00Z")
+        self.parse_free_text.assert_not_called()
+
+    def test_a_date_outside_the_format_gets_the_date_hint_and_no_ai_call(self):
+        self.call(message_update(text="/add toilet paper 2x10 $12.90 15/9"))
+        self.assertEqual(self.replies(), [replies.DATE_HINT])
+        self.assertEqual(store.list_events("toilet-paper"), [])
+        self.assertEqual(self.stats(), {"lines_rejected": 1})
+        self.parse_free_text.assert_not_called()
+
+    def test_other_lines_are_still_recorded_and_the_hint_is_added(self):
+        self.call(message_update(text="+ toilet paper 1x10\n+ toilet paper 2x10 on 15 sep"))
+        said = self.replies()[0]
+        self.assertIn("bought 1 pack of 10 rolls", said)
+        self.assertTrue(said.endswith(replies.DATE_HINT))
+        self.assertEqual(len(store.list_events("toilet-paper")), 1)
+
+    def test_a_line_with_no_keyword_can_carry_a_date_with_no_ai_call(self):
+        self.call(message_update(text="toilet paper 2x10 12.90 on 15/09/2026"))
+        self.assertEqual(store.list_events("toilet-paper")[0]["at"], "2026-09-15T04:00:00Z")
+        self.parse_free_text.assert_not_called()
+
+    def test_chat_that_mentions_a_date_stays_silent(self):
+        self.parse_free_text.return_value = ai.Parsed([], None, {"input_tokens": 1, "output_tokens": 1})
+        self.call(message_update(text="see you on 15 sep"))
+        self.assertEqual(self.replies(), [])
+
+
 class ButtonRouteTest(HandlerTestCase):
     def setUp(self):
         super().setUp()
@@ -664,6 +718,20 @@ class ChatterTest(HandlerTestCase):
         self.match_item.assert_not_called()
         self.parse_free_text.assert_not_called()
         self.assertEqual(self.table.keys("EVT#") + self.table.keys("STATS"), [])
+
+
+
+class ExpiryRouteTest(HandlerTestCase):
+    def setUp(self):
+        super().setUp()
+        self.add_item("toilet-paper", "Toilet paper", "roll", pack_size=10)
+
+    def test_an_expiry_word_with_no_date_gets_the_expiry_hint(self):
+        self.call(message_update(text="+ toilet paper 1x10 exp soon\n+ toilet paper 2x10 exp 12/27"))
+        said = self.replies()[0]
+        self.assertEqual(said.splitlines(), ["✓ Toilet paper: bought 2 packs × 10 rolls (20 rolls), expires 1 Dec 2027.",
+                                             replies.EXPIRY_HINT])
+        self.assertEqual(self.stats(), {"lines_structured": 1, "lines_rejected": 1})
 
 
 if __name__ == "__main__":

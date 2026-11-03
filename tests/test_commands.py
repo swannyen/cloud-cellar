@@ -1,4 +1,4 @@
-"""Command tests: /listitems, /list, /items, /undo, /alias, /rename, /set, /unit, /brand, /listbrands, /forget,
+"""Command tests: /listitems, /list, /price, /items, /undo, /alias, /rename, /set, /unit, /brand, /listbrands, /forget,
 /stats, /help, /ping."""
 import unittest
 from unittest import mock
@@ -51,7 +51,7 @@ class SimpleCommandTest(CommandTestCase):
         self.assertEqual(commands.handle("/start@bettynuffbot", MEI, NOW), replies.HELP)
 
     def test_commands_from_later_phases_say_so(self):
-        for command in ("/status", "/price detergent", "/fx MYR", "/expiring"):
+        for command in ("/status", "/fx MYR", "/expiring"):
             self.assertEqual(commands.handle(command, MEI, NOW), replies.NOT_AVAILABLE_YET)
 
     def test_unknown_command_stays_silent(self):
@@ -82,7 +82,7 @@ class SimpleCommandTest(CommandTestCase):
 
 
 class ListTest(CommandTestCase):
-    """/list <item>: one item in detail. /list on its own is kept for the shopping list (Phase 2)."""
+    """/list <item>: one item in detail. /list on its own is kept for the shopping list (Phase 3)."""
 
     def body_wash(self):
         self.add_item("body-wash", "Body wash", "ml", ["shower gel"])
@@ -103,7 +103,7 @@ class ListTest(CommandTestCase):
             "Body wash (body-wash)",
             "Left: 2.8 L (3.5 packs)",
             "Pack size: 800 ml",
-            "By brand, if the oldest is used first:",
+            "By brand, if what expires first is used first:",
             "• Shokubutsu — 1.2 L",
             "• Lux — 800 ml",
             "• no brand — 800 ml",
@@ -117,7 +117,7 @@ class ListTest(CommandTestCase):
             "Body wash (body-wash)",
             "Left: 2 L (2.5 packs)",
             "Pack size: 800 ml",
-            "By brand, if the oldest is used first:",
+            "By brand, if what expires first is used first:",
             "• Shokubutsu — 1.2 L",
             "• no brand — 800 ml",
             "Bought before: Lux",
@@ -144,7 +144,7 @@ class ListTest(CommandTestCase):
             "Toilet paper (toilet-paper)",
             "Left: 10 rolls (1 pack), running low",
             "Pack size: 10 rolls",
-            "By brand, if the oldest is used first:",
+            "By brand, if what expires first is used first:",
             "• kleenex — 10 rolls",
         ]))
         self.record("- toilet paper", update_id=3)
@@ -481,7 +481,7 @@ class UnitTest(CommandTestCase):
         self.assertEqual(store.list_units(), {"sticks": "pcs"})
         self.assertEqual(self.table.rows[("UNIT", "sticks")]["added_by"], "Mei")
         self.assertEqual(self.record("+ 2 sticks facial masks $1.96 from taobao"),
-                         ["✓ Facial masks: bought 2 pieces for $1.96 at Taobao ($0.98/piece)."])
+                         ["✓ Facial masks: bought 2 pieces for $1.96 at Taobao ($0.98/piece). First price recorded."])
 
     def test_a_pack_word_can_be_taught_too(self):
         self.assertIn("now means carton", commands.handle("/unit CTN = Carton", MEI, NOW))
@@ -513,7 +513,7 @@ class BrandCommandTest(CommandTestCase):
         self.assertEqual(self.table.rows[("BRAND", "kans")]["added_by"], "Mei")
         # no_ai would raise if the matcher needed help.
         self.assertEqual(self.record("+ kans facial masks 2pcs $1.96 @taobao"),
-                         ["✓ Facial masks: bought 2 pieces for $1.96 at Taobao ($0.98/piece)."])
+                         ["✓ Facial masks: bought 2 pieces for $1.96 at Taobao ($0.98/piece). First price recorded."])
         self.assertEqual(store.list_events("facial-masks")[0]["brand"], "kans")
 
     def test_brand_name_is_kept_as_typed_and_may_have_several_words(self):
@@ -594,6 +594,177 @@ class StatsTest(CommandTestCase):
         self.assertIn("Lines read by the format: 12", reply)
         self.assertIn("AI item matches: 3", reply)
         self.assertIn("Lines I couldn't read: 1", reply)
+
+
+class PriceCommandTest(CommandTestCase):
+    """/price <item>: the best, usual and latest prices."""
+
+    def price(self, text="/price toilet paper", now=NOW):
+        return commands.handle(text, MEI, now)
+
+    def log(self, text, day, update_id=None):
+        at = f"2026-10-{day:02d}T04:00:00Z"
+        self.record(text, update_id=update_id or day, at=at)
+
+    def test_on_its_own_it_says_how_to_use_it(self):
+        self.assertEqual(self.price("/price"), replies.PRICE_USAGE)
+        self.assertEqual(self.price("/price   "), replies.PRICE_USAGE)
+
+    def test_an_unknown_item_is_named(self):
+        self.assertEqual(self.price("/price caviar"), replies.unknown_item("caviar"))
+
+    def test_an_item_with_no_prices_says_so(self):
+        self.record("+ toilet paper 2x10")
+        self.assertEqual(self.price(), "No prices for Toilet paper in the last 12 months.")
+
+    def test_one_price(self):
+        self.log("+ toilet paper 2x10 $12.90 @fairprice", 5)
+        self.assertEqual(self.price(now=apply.epoch("2026-10-20T00:00:00Z")), "\n".join([
+            "Toilet paper: prices over the last 12 months",
+            "Best: $0.65/roll at FairPrice, 5 Oct",
+            "Latest:",
+            "• 5 Oct: $0.65/roll at FairPrice, paid",
+        ]))
+
+    def test_best_usual_and_the_latest_five_newest_first(self):
+        for day, total in enumerate((10, 12, 8, 14, 16, 18), 1):
+            self.log(f"+ toilet paper 2x10 ${total} @giant", day)
+        self.assertEqual(self.price(now=apply.epoch("2026-10-20T00:00:00Z")), "\n".join([
+            "Toilet paper: prices over the last 12 months",
+            "Best: $0.40/roll at Giant, 3 Oct",
+            "Usual: $0.65/roll",
+            "Latest:",
+            "• 6 Oct: $0.90/roll at Giant, paid",
+            "• 5 Oct: $0.80/roll at Giant, paid",
+            "• 4 Oct: $0.70/roll at Giant, paid",
+            "• 3 Oct: $0.40/roll at Giant, paid",
+            "• 2 Oct: $0.60/roll at Giant, paid",
+        ]))
+
+    def test_seen_prices_are_labelled(self):
+        self.log("? toilet paper 10 rolls $6", 5)
+        self.assertIn("• 5 Oct: $0.60/roll, seen", self.price(now=apply.epoch("2026-10-20T00:00:00Z")))
+
+    def test_repeats_share_a_line_and_still_count_towards_stock(self):
+        self.record("+ toilet paper 2x10 $12.90 @fairprice", update_id=1)
+        self.record("+ toilet paper 2x10 $12.90 @fairprice", update_id=2)
+        self.assertIn("• 9 Oct: $0.65/roll at FairPrice, paid, logged twice", self.price())
+        self.assertNotIn("Usual", self.price())
+        self.assertEqual(store.get_item("toilet-paper")["stock_est"], 40)
+        self.record("+ toilet paper 2x10 $12.90 @fairprice", update_id=3)
+        self.assertIn("paid, logged 3 times", self.price())
+
+    def test_an_old_entry_with_no_currency_is_listed_as_sgd(self):
+        store.put_event("toilet-paper", "2026-10-08T10:00:00Z#1#0", {
+            "action": "bought", "packs": 1, "units_per_pack": 10, "total_price": 5.0, "unit_price": 0.5,
+            "store": "Giant", "at": "2026-10-08T10:00:00Z",
+        })
+        self.assertIn("Best: $0.50/roll at Giant, 8 Oct", self.price())
+
+    def test_another_currency_is_noted_and_not_compared(self):
+        self.record("+ toilet paper 2x10 $12.90 @fairprice")
+        store.put_event("toilet-paper", "2026-10-08T10:00:00Z#1#0", {
+            "action": "bought", "qty": 10, "total_price": 1.0, "unit_price": 0.1, "currency": "MYR",
+            "store": "Lotus", "at": "2026-10-08T10:00:00Z",
+        })
+        said = self.price()
+        self.assertIn("Best: $0.65/roll at FairPrice", said)
+        self.assertNotIn("Lotus", said)
+        self.assertTrue(said.endswith("Also logged in MYR. I don't compare those yet."))
+
+    def test_a_close_spelling_or_another_name_is_enough(self):
+        self.record("+ toilet paper 2x10 $12.90")
+        self.record("+ dish soap 2x500ml $5", update_id=2)
+        self.assertIn("Toilet paper", self.price("/price toilet papr"))
+        self.assertIn("Dishwashing liquid", self.price("/price dish soap"))
+        self.assertIn("Toilet paper", self.price("/price@bettynuffbot toilet paper"))
+
+    def test_prices_show_per_100_for_weights_and_volumes(self):
+        self.record("+ dish soap 2x500ml $5")
+        self.assertIn("$0.50/100 ml", self.price("/price dish soap"))
+
+    def test_help_mentions_it(self):
+        self.assertIn("/price", replies.HELP)
+
+
+class DatedEntryCommandTest(CommandTestCase):
+    """/undo and /price with entries from old receipts."""
+
+    def test_undo_goes_by_when_it_was_logged_not_the_date_on_it(self):
+        self.record("+ toilet paper 1x10", update_id=1)
+        self.record("+ toilet paper 2x10 on 15/09/2026", update_id=2, at="2026-10-09T10:00:30Z")
+        self.assertEqual(commands.handle("/undo", MEI, NOW),
+                         "Undid: Toilet paper, bought 2 packs × 10 rolls (20 rolls) on Tue 15 Sep 2026.")
+        self.assertEqual([event["qty"] for event in store.list_events("toilet-paper")], [10])
+        self.assertEqual(commands.handle("/undo", MEI, NOW), "Undid: Toilet paper, bought 1 pack of 10 rolls.")
+
+    def test_an_old_receipt_can_be_undone_for_a_day_after_logging_it(self):
+        self.record("+ toilet paper 2x10 on 15/09/2026")
+        self.assertEqual(commands.handle("/undo", MEI, apply.epoch(AT) + 25 * 60 * 60), replies.NOTHING_TO_UNDO)
+        self.assertIn("Undid", commands.handle("/undo", MEI, apply.epoch(AT) + 23 * 60 * 60))
+
+    def test_price_shows_the_day_on_the_receipt(self):
+        self.record("+ toilet paper 2x10 $12.90 @fairprice on 15/09/2026")
+        self.assertIn("• 15 Sep: $0.65/roll at FairPrice, paid", commands.handle("/price toilet paper", MEI, NOW))
+
+    def test_help_shows_the_format(self):
+        self.assertIn("on 15/09/2026", replies.HELP)
+
+
+
+class UseCommandTest(CommandTestCase):
+    """/use <item>: the one to use next is the one that expires first. Today is 9 Oct 2026 here."""
+
+    def setUp(self):
+        super().setUp()
+        self.add_item("hand-wash", "Hand wash", "g", brands=["Lux"])
+
+    def use(self, item):
+        return commands.handle(f"/use {item}", MEI, NOW)
+
+    def test_the_one_that_expires_first_then_the_rest_in_order(self):
+        self.record("have lux hand wash 4x400g exp 07/2028\nhave lux hand wash 4x400g exp 06/2028\n"
+                    "have lux hand wash 1x400g exp mar 2028\nhave hand wash 2x250g")
+        self.assertEqual(self.use("hand wash"), "\n".join([
+            "Hand wash: use this one next.",
+            "• Lux, 1 × 400 g, expires 1 Mar 2028",
+            "After that:",
+            "• Lux, 4 × 400 g, expires 1 Jun 2028",
+            "• Lux, 4 × 400 g, expires 1 Jul 2028",
+            "• no brand, 2 × 250 g, no expiry noted",
+        ]))
+
+    def test_something_past_its_date_comes_first_with_a_warning(self):
+        self.record("have lux hand wash 1x400g exp 05/2026\nhave lux hand wash 1x400g exp 15/10/2026")
+        self.assertEqual(self.use("hand wash").splitlines()[1], "• Lux, 1 × 400 g, expired 1 May 2026, so check it first")
+        self.assertEqual(self.use("hand wash").splitlines()[3], "• Lux, 1 × 400 g, expires 15 Oct 2026")
+
+    def test_what_has_been_used_is_taken_off_what_expires_first(self):
+        self.record("have lux hand wash 2x400g exp 07/2028\nhave lux hand wash 1x400g exp 03/2028")
+        self.record("- hand wash 1", update_id=2)
+        self.assertEqual(self.use("hand wash").splitlines()[1], "• Lux, 2 × 400 g, expires 1 Jul 2028")
+
+    def test_a_long_list_is_cut_short(self):
+        self.record("\n".join(f"have lux hand wash 1x400g exp {month}/2028" for month in range(1, 8)))
+        reply = self.use("hand wash")
+        self.assertEqual(reply.splitlines()[-1], "…and 3 more. /list hand wash shows them by brand.")
+        self.assertIn("expires 1 Jan 2028", reply.splitlines()[1])
+
+    def test_without_expiry_dates_it_says_so(self):
+        self.record("have hand wash 2x400g")
+        self.assertEqual(self.use("hand wash"), "No expiry dates are recorded for Hand wash, so I can't tell which goes "
+                                                "first. Count it again with them, like: have hand wash 2x5kg exp 01/2028")
+
+    def test_nothing_there_or_nothing_counted(self):
+        self.assertIn("hasn't been counted yet", self.use("hand wash"))
+        self.record("have hand wash 1x400g exp 01/2028")
+        self.record("- hand wash", update_id=2)
+        self.assertEqual(self.use("hand wash"), "There's no Hand wash left, as far as I know.")
+
+    def test_usage_and_an_unknown_item(self):
+        self.assertEqual(commands.handle("/use", MEI, NOW), replies.USE_USAGE)
+        self.assertEqual(self.use("rice"), replies.unknown_item("rice"))
+        self.assertIn("/use", replies.HELP)
 
 
 if __name__ == "__main__":

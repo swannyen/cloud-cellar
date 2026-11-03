@@ -3,6 +3,7 @@
 Messages go through the real format parser and matcher; only the AI calls are faked.
 """
 import unittest
+from datetime import date
 from unittest import mock
 
 from fakes import FakeTable, entries, no_ai
@@ -10,6 +11,8 @@ from fakes import FakeTable, entries, no_ai
 import ai
 import apply
 import claude_api
+import pricing
+import replies
 import store
 
 MEI = {"id": 42, "name": "Mei"}
@@ -84,12 +87,12 @@ class AcceptanceTest(ApplyTestCase):
         self.assertEqual((event["action"], event["qty"], event["packs"], event["units_per_pack"]), ("bought", 20, 2, 10))
         self.assertEqual((event["store"], event["currency"], event["parse_path"]), ("FairPrice", "SGD", "structured"))
         self.assertAlmostEqual(event["unit_price"], 0.645)
-        self.assertEqual(lines, ["✓ Toilet paper: bought 2 packs × 10 rolls (20 rolls) for $12.90 at FairPrice ($0.65/roll)."])
+        self.assertEqual(lines, ["✓ Toilet paper: bought 2 packs × 10 rolls (20 rolls) for $12.90 at FairPrice ($0.65/roll). First price recorded."])
         self.assertEqual((counts, buttons), ({"lines_structured": 1}, []))
         self.assertEqual(store.get_item("toilet-paper")["pack_size"], 10)
 
         lines, _, _ = self.send("+ toilet paper 2 $12.90", update_id=2)
-        self.assertEqual(lines, ["✓ Toilet paper: bought 2 packs × 10 rolls (20 rolls) for $12.90 ($0.65/roll)."])
+        self.assertEqual(lines, ["✓ Toilet paper: bought 2 packs × 10 rolls (20 rolls) for $12.90 ($0.65/roll). 🔥 As good as your best: $0.65/roll at FairPrice."])
         self.assertEqual([event["qty"] for event in self.events("toilet-paper")], [20, 20])
         self.assertEqual(store.get_item("toilet-paper")["stock_est"], 40)
         self.match_item.assert_not_called()
@@ -97,7 +100,7 @@ class AcceptanceTest(ApplyTestCase):
     def test_single_pieces_are_recorded_as_written(self):
         self.add_face_masks()
         self.assertEqual(self.lines("+ face masks 2pcs $1.96 @taobao"),
-                         ["✓ Face masks: bought 2 pieces for $1.96 at Taobao ($0.98/piece)."])
+                         ["✓ Face masks: bought 2 pieces for $1.96 at Taobao ($0.98/piece). First price recorded."])
         event, = self.events("face-masks")
         self.assertEqual((event["qty"], event["unit_price"]), (2, 0.98))
         self.assertNotIn("packs", event)
@@ -118,7 +121,7 @@ class AcceptanceTest(ApplyTestCase):
 
         self.match_item.side_effect = no_ai
         lines = self.lines("+ 2 sticks facial masks $1.96 from taobao", update_id=2, units={"sticks": "pcs"})
-        self.assertEqual(lines, ["✓ Facial masks: bought 2 pieces for $1.96 at Taobao ($0.98/piece)."])
+        self.assertEqual(lines, ["✓ Facial masks: bought 2 pieces for $1.96 at Taobao ($0.98/piece). First price recorded."])
 
     def test_a_unit_that_does_not_fit_the_item_is_rejected(self):
         self.add_face_masks()
@@ -135,7 +138,7 @@ class AcceptanceTest(ApplyTestCase):
         self.add_toilet_paper()
         self.ai_says("toilet-paper", "Toilet paper", "roll")
         lines, counts, buttons = self.send("+ loo roll 1x10 $6", update_id=7)
-        self.assertEqual(lines, ['✓ Toilet paper: bought 1 pack of 10 rolls for $6.00 ($0.60/roll).'
+        self.assertEqual(lines, ['✓ Toilet paper: bought 1 pack of 10 rolls for $6.00 ($0.60/roll). First price recorded.'
                                  ' (Read "loo roll" as Toilet paper.)'])
         self.assertEqual(buttons, [[("Same item", "m:same:7:0"), ("New item: Loo roll", "m:new:7:0")]])
         self.assertEqual(counts, {"lines_structured": 1, "ai_match_calls": 1})
@@ -147,7 +150,7 @@ class AcceptanceTest(ApplyTestCase):
         apply.confirm_same(store.get_pending("7", "0"))
         self.match_item.side_effect = no_ai
         lines, counts, buttons = self.send("+ loo roll 1x10 $6", update_id=8)
-        self.assertEqual(lines, ["✓ Toilet paper: bought 1 pack of 10 rolls for $6.00 ($0.60/roll)."])
+        self.assertEqual(lines, ["✓ Toilet paper: bought 1 pack of 10 rolls for $6.00 ($0.60/roll). 🔥 As good as your best: $0.60/roll."])
         self.assertEqual((counts, buttons), ({"lines_structured": 1}, []))
         self.match_item.assert_called_once()
 
@@ -170,7 +173,7 @@ class AcceptanceTest(ApplyTestCase):
         self.add_face_masks()
         self.ai_says(None, "Hand masks", "piece")
         lines, _, buttons = self.send("+ hand masks 10 pcs $1.45 from taobao")
-        self.assertEqual(lines, ["✓ Hand masks (new item): bought 10 pieces for $1.45 at Taobao ($0.14/piece)."])
+        self.assertEqual(lines, ["✓ Hand masks (new item): bought 10 pieces for $1.45 at Taobao ($0.14/piece). First price recorded."])
         self.assertEqual(buttons, [])
         self.assertEqual(self.events("face-masks"), [])
         self.assertEqual(self.events("hand-masks")[0]["store"], "Taobao")
@@ -180,7 +183,7 @@ class AcceptanceTest(ApplyTestCase):
         self.add_face_masks(pack_size=50, pack_size_set_at=AT)
         self.ai_says(None, "Facial masks", "piece")
         lines, _, buttons = self.send("+ facial masks 5pcs $1.86 @taobao")
-        self.assertEqual(lines, ["✓ Facial masks (new item): bought 5 pieces for $1.86 at Taobao ($0.37/piece)."])
+        self.assertEqual(lines, ["✓ Facial masks (new item): bought 5 pieces for $1.86 at Taobao ($0.37/piece). First price recorded."])
         self.assertEqual(buttons, [])
         self.assertEqual(self.match_item.call_args.args[0], "facial masks")  # the matcher didn't call it a typo
         self.assertEqual(self.events("face-masks"), [])
@@ -277,10 +280,12 @@ class RecordTest(ApplyTestCase):
         self.assertEqual((event["at"], event["currency"]), (AT, "SGD"))
         self.assertEqual(event["raw_text"], line)  # the line, not the whole message
 
-    def test_raw_text_is_capped(self):
+    def test_the_whole_message_is_kept_up_to_the_longest_telegram_allows(self):
         self.add_toilet_paper(pack_size=10, pack_size_set_at=AT)
         self.send("+ toilet paper @" + "x" * 500)
-        self.assertEqual(len(self.events("toilet-paper")[0]["raw_text"]), 300)
+        self.assertEqual(len(self.events("toilet-paper")[0]["raw_text"]), 516)
+        self.send("+ toilet paper @" + "x" * 5000, update_id=2)
+        self.assertEqual(len(self.events("toilet-paper")[1]["raw_text"]), 4096)
 
     def test_no_unit_price_without_a_price(self):
         self.add_toilet_paper()
@@ -342,7 +347,7 @@ class PackSizeTest(ApplyTestCase):
 
     def test_no_quantity_is_one_pack_once_the_size_is_known(self):
         self.add_toilet_paper(pack_size=10, pack_size_set_at=AT)
-        self.assertEqual(self.lines("+ toilet paper $6"), ["✓ Toilet paper: bought 1 pack of 10 rolls for $6.00 ($0.60/roll)."])
+        self.assertEqual(self.lines("+ toilet paper $6"), ["✓ Toilet paper: bought 1 pack of 10 rolls for $6.00 ($0.60/roll). First price recorded."])
         self.add_item("rice", "Rice", "g")
         self.assertEqual(self.lines("+ rice $12", update_id=2), [
             "How much is in each pack of Rice? Resend like: + rice 1x5kg $12.00 — or write the total, like 5kg."
@@ -359,7 +364,7 @@ class PackSizeTest(ApplyTestCase):
     def test_price_check_records_the_unit_price(self):
         self.add_item("laundry-detergent", "Laundry detergent", "g", ["detergent"])
         self.assertEqual(self.lines("? detergent 3kg $8.95 @shengsiong"),
-                         ["Laundry detergent: $8.95 for 3 kg = $0.30/100 g at Sheng Siong. Price noted."])
+                         ["Laundry detergent: $8.95 for 3 kg = $0.30/100 g at Sheng Siong. Price noted. First price recorded."])
         self.assertNotIn("stock_est", store.get_item("laundry-detergent"))
 
     def test_grams_and_millilitres_stand_in_for_each_other(self):
@@ -390,7 +395,7 @@ class ItemResolutionTest(ApplyTestCase):
         item = store.get_item("dishwashing-liquid")
         self.assertEqual((item["name"], item["base_unit"], item["created_at"]), ("Dishwashing liquid", "ml", AT))
         self.assertEqual((item["aliases"], item["pack_size"]), (["mama lemon"], 500))
-        self.assertEqual(lines, ["✓ Dishwashing liquid (new item): bought 2 packs × 500 ml (1 L) for $5.00 ($0.50/100 ml)."])
+        self.assertEqual(lines, ["✓ Dishwashing liquid (new item): bought 2 packs × 500 ml (1 L) for $5.00 ($0.50/100 ml). First price recorded."])
         self.assertEqual((counts, buttons), ({"lines_structured": 1, "ai_match_calls": 1}, []))
 
     def test_typed_unit_beats_the_ais_guess_for_a_new_item(self):
@@ -409,7 +414,7 @@ class ItemResolutionTest(ApplyTestCase):
         # The resend finds the item by the saved name: no second AI call.
         self.match_item.side_effect = no_ai
         self.assertEqual(self.lines("+ kikkoman 2x1L $7", update_id=2),
-                         ["✓ Soy sauce: bought 2 packs × 1 L (2 L) for $7.00 ($0.35/100 ml)."])
+                         ["✓ Soy sauce: bought 2 packs × 1 L (2 L) for $7.00 ($0.35/100 ml). First price recorded."])
 
     def test_slug_is_capped_and_never_empty(self):
         self.assertEqual(len(apply.slugify("extra " * 20)), 40)
@@ -502,7 +507,7 @@ class BrandTest(ApplyTestCase):
     def test_brand_then_a_known_name_needs_no_ai_and_no_tap(self):
         self.add_facial_masks()
         lines, counts, buttons = self.send("+ kans facial masks 2pcs $1.96 @taobao", brands=["kans"])
-        self.assertEqual(lines, ["✓ Facial masks: bought 2 pieces for $1.96 at Taobao ($0.98/piece)."])
+        self.assertEqual(lines, ["✓ Facial masks: bought 2 pieces for $1.96 at Taobao ($0.98/piece). First price recorded."])
         self.assertEqual((counts, buttons), ({"lines_structured": 1}, []))
         self.assertEqual(self.events("facial-masks")[0]["brand"], "kans")
         item = store.get_item("facial-masks")
@@ -513,7 +518,7 @@ class BrandTest(ApplyTestCase):
         # Before brands: read as an item called "kans facial masks for", sent to the AI, shown with buttons.
         self.add_facial_masks(pack_size=5, pack_size_set_at=AT)
         lines, _, buttons = self.send("bought 2 kans facial masks for 1.96 from Taobao", brands=["kans"])
-        self.assertEqual(lines, ["✓ Facial masks: bought 2 packs × 5 pieces (10 pieces) for $1.96 at Taobao ($0.20/piece)."])
+        self.assertEqual(lines, ["✓ Facial masks: bought 2 packs × 5 pieces (10 pieces) for $1.96 at Taobao ($0.20/piece). First price recorded."])
         self.assertEqual(buttons, [])
 
     def test_the_question_keeps_the_brand_and_the_store_in_its_example(self):
@@ -614,7 +619,8 @@ class FreeTextTest(ApplyTestCase):
             quantity_text="2 packs toilet paper 10 rolls each", total_price=12.9, store="fairprice",
         ))
         typed, _, _ = self.send("+ toilet paper 2x10 $12.90 @fairprice", update_id=2)
-        self.assertEqual(said, typed)
+        self.assertEqual(said, ["✓ Toilet paper: bought 2 packs × 10 rolls (20 rolls) for $12.90 at FairPrice ($0.65/roll). First price recorded."])
+        self.assertEqual(typed, ["✓ Toilet paper: bought 2 packs × 10 rolls (20 rolls) for $12.90 at FairPrice ($0.65/roll). 🔥 As good as your best: $0.65/roll at FairPrice."])
         self.assertEqual((counts, buttons), ({}, []))
         first, second = self.events("toilet-paper")
         differ = {"sk", "raw_text", "parse_path"}
@@ -636,7 +642,7 @@ class FreeTextTest(ApplyTestCase):
         self.add_item("hand-masks", "Hand masks", "piece")
         lines, _, buttons = self.said("HAND masks 10 pcs $1.45 from Taobao", dict(
             item_id="face-masks", item_name="HAND masks", quantity_text="10 pcs", total_price=1.45, store="Taobao"))
-        self.assertEqual(lines, ["✓ Hand masks: bought 10 pieces for $1.45 at Taobao ($0.14/piece)."])
+        self.assertEqual(lines, ["✓ Hand masks: bought 10 pieces for $1.45 at Taobao ($0.14/piece). First price recorded."])
         self.assertEqual(buttons, [])
 
     def test_brand_alone_is_recorded_and_remembered_but_not_learned_as_a_name(self):
@@ -657,7 +663,7 @@ class FreeTextTest(ApplyTestCase):
         self.add_facial_masks()
         lines, _, _ = self.said("Facial masks 5 pcs 1.86 from Qoo10", dict(
             item_id="facial-masks", item_name="facial masks", quantity_text="5 pcs", total_price=1.86, store="Shopee"))
-        self.assertEqual(lines, ["✓ Facial masks: bought 5 pieces for $1.86 ($0.37/piece). (Didn't catch the store.)"])
+        self.assertEqual(lines, ["✓ Facial masks: bought 5 pieces for $1.86 ($0.37/piece). First price recorded. (Didn't catch the store.)"])
         self.assertNotIn("store", self.events("facial-masks")[0])
 
     def test_quantity_the_model_made_up_falls_back_to_asking(self):
@@ -676,7 +682,7 @@ class FreeTextTest(ApplyTestCase):
         self.assertEqual(self.table.keys("EVT#"), [])
         # Either answer is then read by the format.
         self.assertEqual(self.lines("+ eggs 30pcs $6.80 @FairPrice", update_id=2),
-                         ["✓ Eggs: bought 30 pieces for $6.80 at FairPrice ($0.23/piece)."])
+                         ["✓ Eggs: bought 30 pieces for $6.80 at FairPrice ($0.23/piece). First price recorded."])
         self.assertEqual(self.lines("+ eggs 30 packs", update_id=3), ["✓ Eggs: bought 30 packs × 10 pieces (300 pieces)."])
 
     def test_bare_number_is_asked_about_for_a_count_and_for_what_was_used_too(self):
@@ -728,6 +734,326 @@ class TimeTest(unittest.TestCase):
         # 2026-10-31 16:30 UTC is already 1 November in Singapore.
         self.assertEqual(apply.month_key(apply.epoch("2026-10-31T16:30:00Z")), "2026-11")
         self.assertEqual(apply.month_key(apply.epoch("2026-10-31T15:30:00Z")), "2026-10")
+
+
+class PriceVerdictTest(ApplyTestCase):
+    """How a priced entry compares with earlier prices (PLAN.md §8.2), and repeated logs."""
+
+    def setUp(self):
+        super().setUp()
+        self.add_toilet_paper(pack_size=10)
+
+    def test_a_cheaper_purchase_is_the_best_yet(self):
+        self.send("+ toilet paper 2x10 $12.90 @fairprice", update_id=1)
+        lines = self.lines("+ toilet paper 2x10 $11.60 @giant", update_id=2)
+        self.assertEqual(lines, ["✓ Toilet paper: bought 2 packs × 10 rolls (20 rolls) for $11.60 at Giant ($0.58/roll). "
+                                 "🔥 Best price yet. It was $0.65/roll at FairPrice."])
+
+    def test_a_dearer_purchase_says_what_the_best_was(self):
+        self.send("+ toilet paper 2x10 $10.00 @fairprice", update_id=1)
+        lines = self.lines("+ toilet paper 2x10 $20.00 @giant", update_id=2)
+        self.assertEqual(lines, ["✓ Toilet paper: bought 2 packs × 10 rolls (20 rolls) for $20.00 at Giant ($1.00/roll). "
+                                 "Above usual (usually $0.50/roll). Best seen: $0.50/roll at FairPrice."])
+
+    def test_an_entry_is_only_compared_with_earlier_ones(self):
+        lines = self.lines("+ toilet paper 2x10 $12.90 @fairprice")
+        self.assertIn("First price recorded.", lines[0])
+
+    def test_a_price_check_gets_a_verdict_and_joins_the_history(self):
+        self.assertEqual(self.lines("? toilet paper 10 rolls $6 @giant", update_id=1),
+                         ["Toilet paper: $6.00 for 10 rolls = $0.60/roll at Giant. Price noted. First price recorded."])
+        lines = self.lines("? toilet paper 10 rolls $5 @giant", update_id=2)
+        self.assertIn("🔥 Best price yet. It was $0.60/roll at Giant.", lines[0])
+
+    def test_no_price_means_no_verdict(self):
+        self.assertEqual(self.lines("+ toilet paper 2x10"), ["✓ Toilet paper: bought 2 packs × 10 rolls (20 rolls)."])
+
+    def test_only_purchases_and_price_checks_are_compared(self):
+        self.send("+ toilet paper 2x10 $12.90", update_id=1)
+        self.assertNotIn("best", self.lines("have toilet paper 2x10 $5", update_id=2)[0].lower())
+        self.assertNotIn("best", self.lines("- toilet paper 1", update_id=3)[0].lower())
+
+    def test_two_lines_of_one_message_are_compared_in_order(self):
+        lines = self.lines("+ toilet paper 2x10 $12.90\n+ toilet paper 2x10 $11.60")
+        self.assertIn("First price recorded.", lines[0])
+        self.assertIn("🔥 Best price yet.", lines[1])
+
+    def test_identical_purchases_on_one_day_are_both_true_logs(self):
+        self.send("+ toilet paper 2x10 $12.90 @fairprice", update_id=1)
+        self.send("+ toilet paper 2x10 $12.90 @fairprice", update_id=2)
+        self.assertEqual([event["qty"] for event in self.events("toilet-paper")], [20, 20])
+        self.assertEqual(store.get_item("toilet-paper")["stock_est"], 40)
+
+    def test_an_old_entry_with_no_currency_counts_as_sgd(self):
+        store.put_event("toilet-paper", "2026-10-08T10:00:00Z#1#0", {
+            "action": "bought", "packs": 1, "units_per_pack": 10, "total_price": 5.0, "unit_price": 0.5,
+            "store": "Giant", "at": "2026-10-08T10:00:00Z",
+        })
+        lines = self.lines("+ toilet paper 2x10 $12.90")
+        self.assertIn("Best seen: $0.50/roll at Giant.", lines[0])
+
+    def test_a_price_logged_in_another_currency_is_not_compared(self):
+        store.put_event("toilet-paper", "2026-10-08T10:00:00Z#1#0", {
+            "action": "bought", "qty": 10, "total_price": 1.0, "unit_price": 0.1, "currency": "MYR",
+            "store": "Lotus", "at": "2026-10-08T10:00:00Z",
+        })
+        self.assertIn("First price recorded.", self.lines("+ toilet paper 2x10 $12.90")[0])
+
+    def test_a_new_items_first_price_says_so(self):
+        self.ai_says(name="Hand masks", base_unit="piece")
+        lines = self.lines("+ hand masks 10 pcs $1.45 @taobao")
+        self.assertEqual(lines, ["✓ Hand masks (new item): bought 10 pieces for $1.45 at Taobao ($0.14/piece). First price recorded."])
+
+
+class DatedEntryTest(ApplyTestCase):
+    """An entry from an old receipt: when it happened isn't when it was logged. AT is 18:00 on 9 Oct in Singapore."""
+
+    SEP_15 = "2026-09-15T04:00:00Z"  # noon in Singapore
+
+    def setUp(self):
+        super().setUp()
+        self.add_toilet_paper(pack_size=10)
+
+    def test_it_is_recorded_on_that_day_and_remembers_when_it_was_logged(self):
+        lines = self.lines("+ toilet paper 2x10 $12.90 @fairprice on 15/09/2026")
+        event, = self.events("toilet-paper")
+        self.assertEqual((event["at"], event["logged_at"]), (self.SEP_15, AT))
+        self.assertTrue(event["sk"].startswith(self.SEP_15))
+        self.assertEqual(lines, ["✓ Toilet paper: bought 2 packs × 10 rolls (20 rolls) for $12.90 at FairPrice ($0.65/roll) "
+                                 "on Tue 15 Sep 2026. First price recorded."])
+
+    def test_with_no_date_it_is_recorded_when_it_was_sent(self):
+        self.send("+ toilet paper 2x10")
+        event, = self.events("toilet-paper")
+        self.assertEqual(event["at"], AT)
+        self.assertNotIn("logged_at", event)
+
+    def test_todays_date_is_no_different_from_no_date(self):
+        lines = self.lines("+ toilet paper 2x10 on 9/10/2026")
+        event, = self.events("toilet-paper")
+        self.assertEqual(event["at"], AT)
+        self.assertNotIn("logged_at", event)
+        self.assertEqual(lines, ["✓ Toilet paper: bought 2 packs × 10 rolls (20 rolls)."])
+
+    def test_today_is_the_day_in_singapore(self):
+        late = "2026-10-09T18:00:00Z"  # already 2 am on 10 Oct there
+        self.send("+ toilet paper 2x10 on 10/10/2026", at=late)
+        self.assertEqual(self.events("toilet-paper")[0]["at"], late)
+
+    def test_with_no_year_it_is_the_last_time_that_date_came_round(self):
+        lines = self.lines("+ toilet paper 2x10 on 5/12")
+        self.assertEqual(self.events("toilet-paper")[0]["at"], "2025-12-05T04:00:00Z")
+        self.assertIn("on Fri 5 Dec 2025", lines[0])
+
+    def test_a_date_to_come_is_not_recorded(self):
+        lines, counts, _ = self.send("+ toilet paper 2x10 on 5/12/2026")
+        self.assertEqual(lines, ["5/12/2026 hasn't happened yet, so that line isn't recorded. " + replies.DATE_FORMAT])
+        self.assertEqual(self.events("toilet-paper"), [])
+        self.assertEqual(counts, {"lines_rejected": 1})
+
+    def test_a_date_that_does_not_exist_is_not_recorded(self):
+        for written in ("31/2/2026", "9/15/2026"):
+            with self.subTest(written=written):
+                lines = self.lines(f"+ toilet paper 2x10 on {written}")
+                self.assertEqual(lines, [f"{written} isn't a date, so that line isn't recorded. " + replies.DATE_FORMAT])
+        self.assertEqual(self.events("toilet-paper"), [])
+
+    def test_a_bad_date_costs_no_ai_call_and_makes_no_item(self):
+        self.send("+ caviar 2pcs on 31/2/2026")  # no_ai would fail the test if the AI were asked
+        self.assertEqual([item["item_id"] for item in store.list_items()], ["toilet-paper"])
+
+    def test_the_other_lines_of_the_message_are_still_recorded(self):
+        lines = self.lines("+ toilet paper 2x10 on 5/12/2026\n+ toilet paper 1x10 on 15/09/2026")
+        self.assertEqual(len(lines), 2)
+        self.assertEqual([event["qty"] for event in self.events("toilet-paper")], [10])
+
+    def test_older_entries_replay_in_date_order(self):
+        self.send("+ toilet paper 1x10", update_id=1)
+        self.send("+ toilet paper 2x10 on 15/09/2026", update_id=2)
+        self.assertEqual([event["qty"] for event in self.events("toilet-paper")], [20, 10])
+
+    def test_an_old_purchase_adds_to_stock_when_nothing_came_after_it(self):
+        lines = self.lines("+ toilet paper 2x10 on 15/09/2026")
+        self.assertEqual(store.get_item("toilet-paper")["stock_est"], 20)
+        self.assertNotIn("Stock stays", lines[0])
+
+    def test_a_purchase_before_a_later_count_leaves_the_count_alone_and_says_why(self):
+        self.send("have toilet paper 1x10", update_id=1)
+        lines = self.lines("+ toilet paper 2x10 on 15/09/2026", update_id=2)
+        self.assertEqual(store.get_item("toilet-paper")["stock_est"], 10)
+        self.assertTrue(lines[0].endswith("(Stock stays the same: it was counted or ran out after that date.)"), lines[0])
+
+    def test_a_purchase_before_a_run_out_leaves_the_item_out(self):
+        self.send("- toilet paper", update_id=1)
+        lines = self.lines("+ toilet paper 2x10 on 15/09/2026", update_id=2)
+        item = store.get_item("toilet-paper")
+        self.assertEqual((item["stock_est"], item["status"]), (0, "out"))
+        self.assertIn("Stock stays the same", lines[0])
+
+    def test_an_ordinary_purchase_never_says_stock_stayed_the_same(self):
+        self.assertNotIn("Stock stays", self.lines("+ toilet paper 2x10", update_id=1)[0])
+
+    def test_other_kinds_of_entry_spell_out_the_date_too(self):
+        self.send("+ toilet paper 5x10", update_id=1, at="2026-08-01T04:00:00Z")
+        self.assertEqual(self.lines("- toilet paper 2x10 on 15/09/2026", update_id=2),
+                         ["✓ Toilet paper: used 2 packs × 10 rolls (20 rolls) on Tue 15 Sep 2026, 30 rolls (3 packs) left."])
+        self.assertIn("at Giant on Tue 15 Sep 2026. Price noted.", self.lines("? toilet paper 10 rolls $6 @giant on 15/09/2026", update_id=5)[0])
+        self.assertIn("counted 1 pack of 10 rolls in stock on Tue 15 Sep 2026", self.lines("have toilet paper 1x10 on 15/09/2026", update_id=6)[0])
+
+    def test_two_receipts_with_one_price_on_different_days_are_two_prices(self):
+        self.send("+ toilet paper 2x10 $12.90 @fairprice on 1/09/2026", update_id=1)
+        self.send("+ toilet paper 2x10 $12.90 @fairprice on 8/09/2026", update_id=2)
+        points = pricing.price_points(self.events("toilet-paper"), apply.epoch(AT))
+        self.assertEqual([(point["day"], point["entries"]) for point in points], [(date(2026, 9, 1), 1), (date(2026, 9, 8), 1)])
+
+    def test_two_entries_for_one_receipt_date_are_one_price(self):
+        self.send("+ toilet paper 2x10 $12.90 @fairprice on 1/09/2026", update_id=1)
+        self.send("+ toilet paper 2x10 $12.90 @fairprice on 1/09/2026", update_id=2)
+        points = pricing.price_points(self.events("toilet-paper"), apply.epoch(AT))
+        self.assertEqual([point["entries"] for point in points], [2])
+        self.assertEqual(store.get_item("toilet-paper")["stock_est"], 40)
+
+    def test_a_question_back_keeps_the_date_so_the_resend_is_not_logged_as_today(self):
+        self.add_face_masks()
+        lines = self.lines("+ face masks 2 $1.96 on 15/09/2026")
+        self.assertEqual(lines, ["How many in each pack of Face masks? Resend like: + face masks 2x5pcs $1.96 on 15/09/2026 — "
+                                 "or write 2pcs if you mean single pieces."])
+
+    def test_moving_a_dated_guess_to_a_new_item_keeps_undo_working(self):
+        self.ai_says(item_id="toilet-paper", name="Toilet paper", base_unit="roll")
+        self.send("+ loo roll 1x10 $6 on 15/09/2026", update_id=7)
+        new = apply.split_into_new_item(store.get_pending("7", "0"))
+        recent, = store.list_recent_events(42)
+        self.assertEqual(recent["event_pk"], f"EVT#{new['item_id']}")
+        self.assertTrue(recent["event_sk"].startswith(self.SEP_15))
+
+    def test_free_text_uses_the_date_written_in_the_message(self):
+        text = "bought 2 packs toilet paper 10 rolls each $12.90 fairprice on 15/09/2026"
+        lines, _, _ = self.said(text, dict(item_id="toilet-paper", item_name="toilet paper",
+                                           quantity_text="2 packs toilet paper 10 rolls each", total_price=12.9))
+        event, = self.events("toilet-paper")
+        self.assertEqual((event["at"], event["logged_at"]), (self.SEP_15, AT))
+        self.assertIn("on Tue 15 Sep 2026", lines[0])
+
+    def test_free_text_with_an_unreadable_date_is_not_recorded_and_says_so_once(self):
+        lines, _, _ = self.said("got toilet paper and rice on 15 sep",
+                                dict(item_id="toilet-paper", item_name="toilet paper", quantity_text=None),
+                                dict(item_id="toilet-paper", item_name="toilet paper", quantity_text=None))
+        self.assertEqual(lines, [replies.DATE_HINT])
+        self.assertEqual(self.events("toilet-paper"), [])
+
+
+class StocktakeTest(ApplyTestCase):
+    """A stocktake written over several lines or messages adds up (PLAN.md §8.1)."""
+
+    def setUp(self):
+        super().setUp()
+        self.add_item("body-wash", "Body wash", "ml", pack_size=750)
+        self.add_item("hand-wash", "Hand wash", "g")
+
+    @staticmethod
+    def count(item_id, quantity_text, brand=None, **fields):
+        name = item_id.replace("-", " ")
+        return dict(action="stock_count", item_id=item_id, item_name=name, base_unit="ml" if item_id == "body-wash" else "g",
+                    quantity_text=quantity_text, brand=brand, **fields)
+
+    def test_the_lines_of_a_stocktake_add_up_and_each_reply_says_the_total(self):
+        text = ("Stock take for body wash\n1 bottle of 1L Dove body wash\n2 Shokubutsu refill packs 500 ml each\n"
+                "1 bottle opos body wash 500 ml")
+        lines, _, _ = self.said(text, self.count("body-wash", "1 bottle of 1L", "Dove"),
+                                self.count("body-wash", "2 Shokubutsu refill packs 500 ml each", "Shokubutsu"),
+                                self.count("body-wash", "1 bottle opos body wash 500 ml", "opos"), update_id=5)
+        self.assertEqual(lines, ["✓ Body wash: counted 1 pack of 1 L in stock.",
+                                 "✓ Body wash: counted 2 packs × 500 ml (1 L) in stock, 2 L in all.",
+                                 "✓ Body wash: counted 1 pack of 500 ml in stock, 2.5 L in all."])
+        self.assertEqual(store.get_item("body-wash")["stock_est"], 2500)
+
+    def test_counts_of_other_brands_later_that_day_add_up_and_a_brand_counted_again_is_replaced(self):
+        self.said("I have 4 bottles of Lux hand wash, 400g each",
+                  self.count("hand-wash", "4 bottles of Lux hand wash, 400g each", "Lux"), update_id=5)
+        lines, _, _ = self.said("I have 1 bottle Dettol hand wash 250g",
+                                self.count("hand-wash", "1 bottle Dettol hand wash 250g", "Dettol"), update_id=6)
+        self.assertEqual(lines, ["✓ Hand wash: counted 1 pack of 250 g in stock, 1.85 kg in all."])
+        self.said("Lux hand wash 2 bottles 400g", self.count("hand-wash", "2 bottles 400g", "Lux"), update_id=7)
+        self.assertEqual(store.get_item("hand-wash")["stock_est"], 1050)
+
+    def test_another_few_add_to_what_was_counted(self):
+        self.said("I have 4 bottles of Lux hand wash, 400g each",
+                  self.count("hand-wash", "4 bottles of Lux hand wash, 400g each", "Lux"), update_id=5)
+        lines, _, _ = self.said("I have another 3 bottles of Lux hand wash, 400g each",
+                                self.count("hand-wash", "3 bottles of Lux hand wash, 400g each", "Lux", adds=True), update_id=6)
+        self.assertEqual(lines, ["✓ Hand wash: counted 3 packs × 400 g (1.2 kg) more in stock, 2.8 kg in all."])
+        self.assertTrue(self.events("hand-wash")[-1]["adds"])
+        self.assertNotIn("adds", self.events("hand-wash")[0])
+
+    def test_a_count_whose_quantity_cannot_be_read_is_not_recorded(self):
+        self.said("4 bottles of Lux hand wash, 400g each", self.count("hand-wash", "4 bottles of Lux hand wash, 400g each", "Lux"))
+        lines, counts, _ = self.said("Hand wash: 4 bottles and 2 refills of Lux",
+                                     self.count("hand-wash", "4 bottles and 2 refills", "Lux"), update_id=2)
+        self.assertEqual(lines, ["Couldn't read how much Hand wash that counts, so it isn't recorded. "
+                                 "Resend like: have lux hand wash 2x5kg"])
+        self.assertEqual(counts, {"lines_rejected": 1})
+        self.assertEqual(store.get_item("hand-wash")["stock_est"], 1600)
+
+    def test_a_purchase_whose_quantity_cannot_be_read_is_still_one_pack(self):
+        self.said("4 bottles of Lux hand wash, 400g each", self.count("hand-wash", "4 bottles of Lux hand wash, 400g each", "Lux"))
+        lines, _, _ = self.said("got Lux hand wash 4 bottles and 2 refills $9",
+                                dict(action="bought", item_id="hand-wash", item_name="hand wash", base_unit="g",
+                                     quantity_text="4 bottles and 2 refills", total_price=9, brand="Lux"), update_id=2)
+        self.assertTrue(lines[0].startswith("✓ Hand wash: bought 1 pack of 400 g for $9.00"), lines[0])
+        self.assertTrue(lines[0].endswith("(Didn't catch the quantity.)"), lines[0])
+
+
+class StoreWrittenLastTest(ApplyTestCase):
+    def test_a_store_written_last_is_where_it_was_bought_not_part_of_the_item(self):
+        self.add_item("body-wash", "Body wash", "ml")
+        lines, counts, buttons = self.send("/add body wash 3*400g $21.85 taobao")
+        self.assertEqual(lines, ["✓ Body wash: bought 3 packs × 400 ml (1.2 L) for $21.85 at Taobao ($1.82/100 ml). "
+                                 "First price recorded."])
+        self.assertEqual((counts, buttons), ({"lines_structured": 1}, []))
+        self.assertEqual(self.events("body-wash")[0]["store"], "Taobao")
+        self.assertEqual(store.get_item("body-wash")["aliases"], [])
+        self.match_item.assert_not_called()
+
+
+
+class ExpiryApplyTest(ApplyTestCase):
+    """An expiry date on a purchase or a count is stored, and the reply says it."""
+
+    def setUp(self):
+        super().setUp()
+        self.add_toilet_paper(pack_size=10, pack_size_set_at=AT)
+
+    def test_a_count_with_an_expiry(self):
+        self.assertEqual(self.lines("have toilet paper 1x10 exp 12/27"),
+                         ["✓ Toilet paper: counted 1 pack of 10 rolls in stock, expires 1 Dec 2027."])
+        self.assertEqual(self.events("toilet-paper")[0]["expires_on"], "2027-12-01")
+
+    def test_a_purchase_already_past_its_date_is_still_recorded_and_said_so(self):
+        line, = self.lines("+ toilet paper 1x10 $5 exp 1/9/2026")
+        self.assertIn("($0.50/roll), expired 1 Sep 2026.", line)
+        self.assertEqual(self.events("toilet-paper")[0]["expires_on"], "2026-09-01")
+
+    def test_a_date_with_no_year_goes_by_the_day_it_happened(self):
+        self.send("have toilet paper 1x10 exp 5/1 on 15/09/2026")
+        self.assertEqual(self.events("toilet-paper")[0]["expires_on"], "2027-01-05")
+
+    def test_an_expiry_that_is_not_a_date_records_nothing(self):
+        lines, counts, _ = self.send("+ toilet paper 1x10 exp 31/02/2027")
+        self.assertEqual((lines, counts), ([replies.EXPIRY_HINT], {"lines_rejected": 1}))
+        self.assertEqual(self.events("toilet-paper"), [])
+
+    def test_only_purchases_and_counts_keep_one(self):
+        self.send("have toilet paper 2x10")
+        self.send("- toilet paper 1 exp 12/27", update_id=2)
+        self.assertNotIn("expires_on", self.events("toilet-paper")[1])
+
+    def test_free_text_with_an_expiry_that_cannot_be_read_is_still_recorded(self):
+        lines, _, _ = self.said("we have 2 packs of toilet paper, expires 31/02/2027",
+                                dict(action="stock_count", item_id="toilet-paper", item_name="toilet paper",
+                                     quantity_text="2 packs", expiry_text="expires 31/02/2027"))
+        self.assertEqual(lines, ["✓ Toilet paper: counted 2 packs × 10 rolls (20 rolls) in stock. (Didn't catch the expiry.)"])
+        self.assertNotIn("expires_on", self.events("toilet-paper")[0])
 
 
 if __name__ == "__main__":

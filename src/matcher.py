@@ -38,11 +38,18 @@ def match_phrase(phrase, items, brands=()):
     found = match(phrase, items)
     if found and found[1] == "exact":
         return found, phrase, None
-    recorded = [brand for item in items for brand in item.get("brands", [])]
-    brand, rest = split_brand(phrase, [*brands, *recorded])
+    brand, rest = split_brand(phrase, known_brands(items, brands))
     if brand is None:
         return found, phrase, None
     return match(rest, items), rest, brand
+
+
+def known_brands(items, brands=()) -> list:
+    """The brands taught with /brand, then those recorded on the items' entries, each once."""
+    known = {}
+    for brand in [*brands, *(brand for item in items for brand in item.get("brands", []))]:
+        known.setdefault(plain(brand), brand)
+    return [brand for key, brand in known.items() if key]
 
 
 def split_brand(phrase, brands):

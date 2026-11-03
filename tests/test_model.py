@@ -134,10 +134,12 @@ class BrandsLeftTest(unittest.TestCase):
         self.assertEqual(self.left(ev("stock_count", 35)), [("Kleenex", 5), ("Scott", 30)])
         self.assertEqual(self.left(ev("stock_count", 0)), [])
 
-    def test_a_count_that_finds_more_adds_the_difference_under_the_brand_named_if_any(self):
+    def test_a_count_that_finds_more_adds_the_difference_with_no_brand(self):
         self.assertEqual(self.left(ev("stock_count", 60)), [("Kleenex", 20), ("Scott", 30), (None, 10)])
-        self.assertEqual(self.left(ev("stock_count", 60, brand="Vinda")), [("Kleenex", 20), ("Scott", 30), ("Vinda", 10)])
         self.assertEqual(model.brands_left([ev("stock_count", 12)]), [(None, 12)])
+
+    def test_a_count_that_names_a_brand_is_all_that_brand(self):
+        self.assertEqual(self.left(ev("stock_count", 60, brand="Vinda")), [("Vinda", 60)])
 
     def test_opening_the_last_pack_leaves_one_pack_of_the_newest(self):
         self.assertEqual(self.left(ev("opened_last"), pack_size=10), [("Scott", 10)])
@@ -160,6 +162,98 @@ class BrandsLeftTest(unittest.TestCase):
             ]
             left = model.brands_left(events, pack_size)
             stock = model.replay(events, pack_size)["stock_est"]
+            self.assertAlmostEqual(sum(amount for _, amount in left), stock or 0, places=6, msg=events)
+            self.assertTrue(all(amount > 0 for _, amount in left), events)
+
+
+def counted(qty, update_id, line=0, brand=None, at="2026-11-03T04:00:00Z", **fields):
+    """A count as it comes from the table: its sort key says which message and line it was."""
+    return ev("stock_count", qty, at, brand=brand, sk=f"{at}#{update_id}#{line}", **fields)
+
+
+class StocktakeTest(unittest.TestCase):
+    """A day's counts of one item are one stocktake (PLAN.md §8.1)."""
+
+    BOUGHT_LAST_MONTH = ev("bought", 400, "2026-10-11T04:00:00Z", sk="2026-10-11T04:00:00Z#1#0")
+
+    def stock(self, *events, pack_size=None):
+        return model.replay(list(events), pack_size)["stock_est"]
+
+    def test_the_lines_of_one_message_add_up_brand_by_brand(self):
+        events = [self.BOUGHT_LAST_MONTH, counted(1000, 9, 0, "Dove"), counted(400, 9, 1, "半亩花田"),
+                  counted(475, 9, 2), counted(750, 9, 3, "半亩花田")]
+        self.assertEqual(self.stock(*events), 2625)
+        self.assertEqual(model.brands_left(events), [("Dove", 1000), ("半亩花田", 1150), (None, 475)])
+
+    def test_messages_that_day_about_other_brands_add_to_the_count(self):
+        events = [self.BOUGHT_LAST_MONTH,
+                  counted(2750, 7, brand="na", at="2026-11-03T04:02:20Z"),
+                  counted(500, 8, brand="nard", at="2026-11-03T04:02:57Z"),
+                  counted(500, 9, brand="ScalpScience", at="2026-11-03T04:03:54Z"),
+                  counted(400, 10, brand="Fairo", at="2026-11-03T04:11:02Z")]
+        self.assertEqual(self.stock(*events), 4150)
+        self.assertEqual(model.brands_left(events),
+                         [("na", 2750), ("nard", 500), ("ScalpScience", 500), ("Fairo", 400)])
+
+    def test_a_brand_counted_again_that_day_is_replaced(self):
+        first = counted(1600, 7, brand="Lux", at="2026-11-03T03:58:59Z")
+        again = [counted(qty, 8, line, "lux", at="2026-11-03T04:06:57Z") for line, qty in enumerate([1600, 1600, 1600, 400])]
+        self.assertEqual(self.stock(first, *again), 5200)
+        self.assertEqual(model.brands_left([first, *again]), [("Lux", 5200)])
+
+    def test_another_few_add_to_what_is_there(self):
+        first = counted(1600, 7, brand="Lux", at="2026-11-03T03:58:59Z")
+        more = counted(1200, 8, brand="Lux", at="2026-11-03T03:59:38Z", adds=True)
+        self.assertEqual(self.stock(first, more), 2800)
+        self.assertEqual(self.stock(self.BOUGHT_LAST_MONTH, more), 1600)
+        # A full recount later that day still replaces both.
+        self.assertEqual(self.stock(first, more, counted(1600, 9, brand="Lux", at="2026-11-03T04:06:57Z")), 1600)
+
+    def test_a_recount_with_no_brand_starts_again(self):
+        self.assertEqual(self.stock(counted(3, 7), counted(4, 8)), 4)
+        self.assertEqual(self.stock(counted(3, 7, 0), counted(4, 7, 1)), 7)   # one message: both are there
+
+    def test_a_count_with_no_brand_after_branded_ones_is_counted_as_its_own_brand(self):
+        events = [counted(1000, 7, brand="Dove"), counted(500, 8), counted(800, 9, brand="qise"), counted(300, 10)]
+        self.assertEqual(self.stock(*events), 2100)
+        self.assertEqual(model.brands_left(events), [("Dove", 1000), ("qise", 800), (None, 300)])
+
+    def test_the_first_count_of_a_new_day_replaces_everything(self):
+        yesterday = counted(2750, 7, brand="na", at="2026-11-02T04:00:00Z")
+        self.assertEqual(self.stock(yesterday, counted(500, 8, brand="nard")), 500)
+
+    def test_the_day_is_singapore_time(self):
+        before_midnight = counted(2750, 7, brand="na", at="2026-11-02T15:30:00Z")
+        after_midnight = counted(500, 8, brand="nard", at="2026-11-02T16:30:00Z")
+        same_evening = counted(500, 8, brand="nard", at="2026-11-02T15:50:00Z")
+        self.assertEqual(self.stock(before_midnight, after_midnight), 500)
+        self.assertEqual(self.stock(before_midnight, same_evening), 3250)
+
+    def test_a_purchase_in_between_keeps_the_stocktake_going(self):
+        events = [counted(2750, 7, brand="na", at="2026-11-03T04:00:00Z"),
+                  ev("bought", 500, "2026-11-03T05:00:00Z", brand="nard", sk="2026-11-03T05:00:00Z#8#0"),
+                  counted(400, 9, brand="Fairo", at="2026-11-03T06:00:00Z")]
+        self.assertEqual(self.stock(*events), 3650)
+
+    def test_status_follows_the_whole_count(self):
+        first = counted(400, 7, 0, "Lux")
+        self.assertEqual(model.replay([first], pack_size=400)["status"], "low")
+        self.assertEqual(model.replay([first, counted(400, 7, 1, "Lux")], pack_size=400)["status"], "ok")
+
+    def test_the_brands_always_add_up_to_the_stock_figure(self):
+        chooser = random.Random(11)
+        actions = ("bought", "used", "stock_count", "stock_count", "stock_count", "finished", "still_have")
+        for _ in range(2000):
+            events = []
+            for update_id in range(chooser.randint(0, 10)):
+                at = chooser.choice(["2026-11-02T04:00:00Z", "2026-11-03T04:00:00Z", "2026-11-03T04:00:00Z"])
+                for line in range(chooser.randint(1, 3)):
+                    events.append(ev(chooser.choice(actions), chooser.choice([None, 0, 5, 10, 400, 0.3]), at,
+                                     brand=chooser.choice([None, None, "Lux", "lux", "Dettol"]),
+                                     adds=chooser.random() < 0.2, sk=f"{at}#{update_id}#{line}"))
+            events.sort(key=lambda event: event["sk"])
+            left = model.brands_left(events, 10)
+            stock = model.replay(events, 10)["stock_est"]
             self.assertAlmostEqual(sum(amount for _, amount in left), stock or 0, places=6, msg=events)
             self.assertTrue(all(amount > 0 for _, amount in left), events)
 
@@ -193,6 +287,36 @@ class PackSizeTest(unittest.TestCase):
 
     def test_no_such_event(self):
         self.assertEqual(model.latest_pack_size([ev("bought", 5), ev("finished")]), (None, None))
+
+
+
+class ExpiryOrderTest(unittest.TestCase):
+    """What expires first is used first (PLAN.md §8.6)."""
+
+    def lux(self, qty, update_id, line, expires_on=None, size=400):
+        return counted(qty, update_id, line, "Lux", expires_on=expires_on, units_per_pack=size, packs=qty // size)
+
+    def test_lots_come_back_in_the_order_to_use_them(self):
+        events = [self.lux(1600, 8, 0, "2028-07-31"), self.lux(1600, 8, 1, "2028-06-30"), self.lux(400, 8, 2),
+                  self.lux(400, 8, 3, "2028-03-31")]
+        self.assertEqual(model.batches_left(events), [
+            {"brand": "Lux", "amount": 400, "expires_on": "2028-03-31", "size": 400},
+            {"brand": "Lux", "amount": 1600, "expires_on": "2028-06-30", "size": 400},
+            {"brand": "Lux", "amount": 1600, "expires_on": "2028-07-31", "size": 400},
+            {"brand": "Lux", "amount": 400, "expires_on": None, "size": 400},
+        ])
+
+    def test_what_is_used_comes_off_what_expires_first(self):
+        events = [ev("bought", 1000, brand="Dove", expires_on="2028-01-31", sk="a#1#0"),
+                  ev("bought", 500, brand="opos", expires_on="2027-05-31", sk="a#2#0"), ev("used", 600, sk="a#3#0")]
+        self.assertEqual(model.brands_left(events), [("Dove", 900)])
+        # A used entry that names a brand still takes that brand first.
+        events[-1] = ev("used", 600, brand="Dove", sk="a#3#0")
+        self.assertEqual(model.brands_left(events), [("Dove", 400), ("opos", 500)])
+
+    def test_the_size_of_a_pack_is_kept_or_worked_out(self):
+        events = [ev("bought", 1100, packs=2, brand="na", sk="a#1#0"), ev("bought", 750, sk="a#2#0")]
+        self.assertEqual([batch["size"] for batch in model.batches_left(events)], [550, None])
 
 
 if __name__ == "__main__":

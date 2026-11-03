@@ -1,10 +1,13 @@
 """Parse the message format (PLAN.md §5.1). Pure: no I/O, no AI.
 
 One entry per line: a keyword, then the item words, one quantity, a price and a
-store in any order, except that the store goes last. Numbers are never guessed
-at: a quantity says what it counts, or the caller asks (resolve_quantity).
+store in any order, except that the store goes last. A date ("on 15/09/2026")
+can go anywhere. Numbers are never guessed at: a quantity says what it counts,
+or the caller asks (resolve_quantity). The same goes for dates (resolve_date).
 """
+import calendar
 import re
+from datetime import date, timedelta
 
 MAX_PACKS = 1000  # more than this in one entry is taken for a typo (a phone number, a price without its $)
 MAX_STORE_LENGTH = 40
@@ -69,6 +72,15 @@ NEED_PACK_SIZE = "need_pack_size"
 WRONG_UNIT = "wrong_unit"
 UNCLEAR_COUNT = "unclear_count"
 
+# Why a date can't be used. BAD_DATE is also what parse_line returns for a line
+# with something date-like that isn't in the format.
+BAD_DATE = "bad_date"
+FUTURE_DATE = "future_date"
+# What parse_line returns for an expiry word with no date it can read after it, and
+# what resolve_expiry returns for a date that doesn't exist.
+BAD_EXPIRY = "bad_expiry"
+EXPIRED_WINDOW_DAYS = 14   # a date with no year that fell this recently is taken as past, not as next year
+
 _NUMBER = r"\d+(?:\.\d+)?"
 _TIMES = re.compile(r"(\d)\s*[x×*]\s*(?=\d)", re.IGNORECASE)  # "2 x 10", "2×10", "2*10"
 _SIZE_TIMES = re.compile(rf"({_NUMBER}[^\W\d_]+)\s*[x×*]\s*(\d+)(?![\w.])", re.IGNORECASE)  # "500ml x2"
@@ -81,6 +93,39 @@ _TWO_DECIMALS = re.compile(r"\d+\.\d\d")
 _READABLE = re.compile(r"[^\W_]")  # a letter or a digit
 _LETTER = re.compile(r"[^\W\d_]")
 _EACH = ("each", "per", "ea")      # "2 packs ... 10 rolls each", in free text
+_MONTHS = ("jan|january|feb|february|mar|march|apr|april|may|jun|june|jul|july|aug|august|"
+           "sep|sept|september|oct|october|nov|november|dec|december")
+# The one date format: "on" and day/month, with the year if wanted. "on sale" stays an item word.
+_ON_DATE = re.compile(r"(?<!\S)on\s+(\d{1,2})/(\d{1,2})(?:/(\d{4}|\d{2}))?(?=[,;.]?(?:\s|$))", re.IGNORECASE)
+# What a date looks like when it isn't in the format. Better to ask than to log it as today.
+_STORE_LIKE_A_DATE = re.compile(r"\d{1,2}/\d{1,2}")  # "@7/11" is a shop. "@ntuc 15/9" is a shop and a date.
+# An expiry (PLAN.md §8.6): a word, then the date. Read before anything else, so that
+# "exp 31/12" isn't a date in the wrong format and "expires on 31/12/2026" isn't the day it was bought.
+_EXPIRY_WORD = re.compile(
+    r"(?<![\w/])(?:exp\.?|expiry(?:\s+date)?|expires?|expiring|best\s+before|use\s+by)(?![\w])"
+    r"(?:\s*:)?(?:\s+(?:in|on|by|is|date|of))?\s*",
+    re.IGNORECASE,
+)
+_END = r"(?![\w/-])"
+_EXPIRY_FORMS = [
+    ("ymd", re.compile(rf"(\d{{4}})-(\d{{1,2}})-(\d{{1,2}}){_END}")),                      # 2026-12-31
+    ("dmy", re.compile(rf"(\d{{1,2}})/(\d{{1,2}})/(\d{{4}}|\d{{2}}){_END}")),              # 31/12/2026, 31/12/26
+    ("my", re.compile(rf"(\d{{1,2}})/(\d{{4}}){_END}")),                                   # 01/2028
+    ("ab", re.compile(rf"(\d{{1,2}})/(\d{{1,2}}){_END}")),                                 # 31/12, or 12/27 for Dec 2027
+    ("d_mon", re.compile(rf"(\d{{1,2}})(?:st|nd|rd|th)?\s+({_MONTHS})\.?(?:,?\s+(\d{{4}}))?{_END}",
+                         re.IGNORECASE)),                                                  # 31 dec, 31 dec 2027
+    ("mon_y", re.compile(rf"({_MONTHS})\.?[\s/-]*(\d{{4}}){_END}", re.IGNORECASE)),       # Jan 2028, jan-2028
+    ("mon", re.compile(rf"({_MONTHS})\.?{_END}", re.IGNORECASE)),                           # dec
+    ("in", re.compile(rf"(\d{{1,3}})\s*(d|days?|w|wks?|weeks?|m|mths?|months?){_END}", re.IGNORECASE)),  # 5d, 2w, 3m
+]
+_DATE_LIKE = re.compile(
+    r"(?<![\w/.-])\d{1,2}/\d{1,2}(?:/\d+)?(?![\w/])"          # 15/9, or a year that can't be right
+    r"|(?<![\w/.-])\d{1,2}[-.]\d{1,2}[-.]\d{2,4}(?![\w-])"     # 15-09-2026, 15.09.26
+    r"|(?<![\w/.-])\d{4}[-/.]\d{1,2}[-/.]\d{1,2}(?![\w-])"     # 2026-09-15
+    rf"|\b\d{{1,2}}(?:st|nd|rd|th)?\s+(?:{_MONTHS})\b"           # 15 sep, 15th september
+    rf"|\b(?:{_MONTHS})\s+\d{{1,2}}\b",                          # sep 15
+    re.IGNORECASE,
+)
 
 
 def parse(text, stores=(), units=None) -> list:
@@ -93,9 +138,10 @@ def parse_line(line, stores=(), units=None):
 
     stores are the saved STORE records and units the taught unit words
     ({word: unit word}). Returns the entry as a dict (action, phrase, quantity,
-    total_price, store, store_is_new, raw, explicit), UNREADABLE for a line
-    that starts with a keyword but can't be read, or None for a line that
-    doesn't start with a keyword. A None in an entry means "not given".
+    total_price, store, store_is_new, on, expiry, raw, explicit), UNREADABLE for a line
+    that starts with a keyword but can't be read, BAD_DATE for one with a date
+    that isn't in the format, BAD_EXPIRY for an expiry word with no date it can
+    read, or None for a line that doesn't start with a keyword. A None in an entry means "not given".
     """
     raw = " ".join(line.split())
     action, rest = _keyword(raw)
@@ -103,12 +149,18 @@ def parse_line(line, stores=(), units=None):
     # A keyword with nothing after it ("done", "??") is ordinary chat, not an attempt.
     if action is None or not _READABLE.search(rest):
         return None
+    rest, expiry = split_expiry(rest)
+    if expiry == BAD_EXPIRY:
+        return BAD_EXPIRY
+    rest, on = split_date(rest)
+    if on == BAD_DATE:
+        return BAD_DATE
     rest, store, store_is_new = _split_store(rest, store_names(stores))
     if action in NO_QUANTITY:
         phrase = " ".join(rest.split())
         if not _READABLE.search(phrase):
             return UNREADABLE
-        return _entry(action, phrase, raw, explicit=explicit)
+        return _entry(action, phrase, raw, explicit=explicit, on=on, expiry=expiry)
     reading = _read(rest, units or {})
     if reading is None:
         return UNREADABLE
@@ -121,12 +173,12 @@ def parse_line(line, stores=(), units=None):
     if action == "finished":
         # "- rice" has run out. "- rice 2" is two packs used, with the rest still there.
         if quantity is None:
-            return _entry("finished", phrase, raw, explicit=explicit)
-        return _entry("used", phrase, raw, quantity, explicit=explicit)
+            return _entry("finished", phrase, raw, explicit=explicit, on=on, expiry=expiry)
+        return _entry("used", phrase, raw, quantity, explicit=explicit, on=on, expiry=expiry)
     # A price check needs both, or there is no unit price to compare.
     if action == "price_check" and (price is None or quantity is None):
         return UNREADABLE
-    return _entry(action, phrase, raw, quantity, price, store, store_is_new, explicit)
+    return _entry(action, phrase, raw, quantity, price, store, store_is_new, explicit, on, expiry)
 
 
 def parse_bought(line, stores=(), units=None):
@@ -200,6 +252,170 @@ def resolve_quantity(quantity, base_unit, pack_size):
     }
 
 
+def split_date(text):
+    """Take the date out of a line or a message, wherever it is.
+
+    Returns (the rest of the text, the date as written). The date is None if
+    there isn't one, or {"day", "month", "year", "written"}, with no year as
+    None. It is BAD_DATE for something date-like that isn't in the format, or
+    for two different dates, since nothing says which belongs to what.
+    """
+    written = set(_ON_DATE.findall(text))
+    rest = " ".join(_ON_DATE.sub(" ", text).split())
+    typed_store = rest.partition("@")[2].strip()
+    without_store = rest if not _STORE_LIKE_A_DATE.fullmatch(typed_store) else rest.partition("@")[0]
+    if len(written) > 1 or _DATE_LIKE.search(without_store):
+        return rest, BAD_DATE
+    if not written:
+        return rest, None
+    day, month, year = written.pop()
+    return rest, {
+        "day": int(day),
+        "month": int(month),
+        "year": int(year) if year else None,
+        "written": "/".join(filter(None, (day, month, year))),
+    }
+
+
+def split_expiry(text):
+    """Take the expiry off a line, wherever it is: (the rest of the line, the expiry as read).
+
+    The expiry is None if there isn't one, or a dict for resolve_expiry. It is
+    BAD_EXPIRY for an expiry word with no date it can read after it, or for two
+    different expiries, since nothing says which is right.
+    """
+    found, rest, start = [], "", 0
+    for word in _EXPIRY_WORD.finditer(text):
+        if word.start() < start:
+            continue  # inside the expiry just read
+        expiry = _expiry_at(text, word.end())
+        if expiry is None:
+            return " ".join(text.split()), BAD_EXPIRY
+        found.append(expiry)
+        rest += text[start:word.start()] + " "
+        start = word.end() + len(expiry["written"])
+    rest = " ".join((rest + text[start:]).split())
+    if len({expiry["written"].lower() for expiry in found}) > 1:
+        return rest, BAD_EXPIRY
+    return rest, (found[0] if found else None)
+
+
+def read_expiry(text):
+    """The expiry in a piece of free text, copied with its word ("expires Jan 2028") or without it ("Jan 2028").
+
+    Returns what split_expiry would, or None.
+    """
+    expiry = split_expiry(text)[1]
+    if expiry is None:
+        return _expiry_at(text.strip(), 0, whole=True)
+    return expiry
+
+
+def strip_expiries(text) -> str:
+    """The text without any expiry in it, line by line: what is left to look for a date in."""
+    return "\n".join(split_expiry(line)[0] if split_expiry(line)[1] != BAD_EXPIRY else line
+                     for line in text.splitlines())
+
+
+def resolve_expiry(expiry, today):
+    """The day an expiry means, or BAD_EXPIRY for a date that doesn't exist. today is a date.
+
+    A month on its own ("Jan 2028", "12/27", "01/2028") means the first day of
+    that month: nobody can tell how far into the month it lasts, and it is
+    better to use something early than to use it after its date. A date with
+    no year is the next time it comes round, unless it fell in the last two
+    weeks, which is more likely something already past its date than something
+    a year away. For a month with no year, that goes by the month's last day.
+    """
+    kind, values = expiry["kind"], expiry["values"]
+    try:
+        if kind in ("ymd", "dmy"):
+            year, month, day = values if kind == "ymd" else values[::-1]
+            return date(_full_year(year), month, day)
+        if kind == "my":
+            return date(values[1], values[0], 1)
+        if kind == "ab":
+            first, second = values
+            if second > 12:
+                return date(_full_year(second), first, 1)   # 12/27: December 2027
+            return _coming(today, second, first)
+        if kind == "d_mon":
+            day, month, year = values
+            return date(year, month, day) if year else _coming(today, month, day)
+        if kind == "mon_y":
+            return date(values[1], values[0], 1)
+        if kind == "mon":
+            recent = _month_end(today.year, values[0]) >= today - timedelta(days=EXPIRED_WINDOW_DAYS)
+            return date(today.year if recent else today.year + 1, values[0], 1)
+        count, unit = values
+        if unit == "m":
+            month = today.month - 1 + count
+            year, month = today.year + month // 12, month % 12 + 1
+            return date(year, month, min(today.day, calendar.monthrange(year, month)[1]))
+        return today + timedelta(days=count * (7 if unit == "w" else 1))
+    except ValueError:
+        return BAD_EXPIRY
+
+
+def _expiry_at(text, position, whole=False):
+    """The expiry date written at a position in the text, as {"kind", "values", "written"}, or None."""
+    for kind, form in _EXPIRY_FORMS:
+        found = form.match(text, position)
+        if found and (not whole or found.end() == len(text)):
+            return {"kind": kind, "values": _expiry_values(kind, found), "written": found[0]}
+    return None
+
+
+def _expiry_values(kind, found):
+    if kind in ("d_mon", "mon_y", "mon"):
+        groups = list(found.groups())
+        index = 1 if kind == "d_mon" else 0
+        groups[index] = _month_number(groups[index])
+        return tuple(int(group) if group is not None else None for group in groups)
+    if kind == "in":
+        return int(found[1]), found[2][0].lower()
+    return tuple(int(group) for group in found.groups())
+
+
+def _month_number(name) -> int:
+    return [month.lower() for month in calendar.month_abbr].index(name[:3].lower())
+
+
+def _month_end(year, month):
+    return date(year, month, calendar.monthrange(year, month)[1])
+
+
+def _full_year(year) -> int:
+    return year + 2000 if year < 100 else year
+
+
+def _coming(today, month, day):
+    """The next time a day and month come round, or this year's if it fell in the last two weeks."""
+    this_year = date(today.year, month, day)
+    if this_year >= today - timedelta(days=EXPIRED_WINDOW_DAYS):
+        return this_year
+    return date(today.year + 1, month, day)
+
+
+def resolve_date(on, today):
+    """The day a written date means, or BAD_DATE / FUTURE_DATE. today is a date.
+
+    Always day first, Singapore style: 3/9 is 3 September, and 9/15 isn't a
+    date. A date with no year is the last time it came round. Nothing is logged
+    ahead of time, so a date still to come can only be a mistake.
+    """
+    if on == BAD_DATE:
+        return BAD_DATE
+    try:
+        if on["year"] is not None:
+            day = date(on["year"] + (2000 if on["year"] < 100 else 0), on["month"], on["day"])
+            return FUTURE_DATE if day > today else day
+        day = date(today.year, on["month"], on["day"])
+        return day if day <= today else date(today.year - 1, on["month"], on["day"])
+    except ValueError:
+        return BAD_DATE
+
+
 def unit_fits(unit, base_unit) -> bool:
     """Whether a typed unit can count an item. No unit ("2x10") means the item's own."""
     # Household liquids are sold by weight or volume interchangeably; 1 ml is close to 1 g.
@@ -225,7 +441,7 @@ def store_names(stores=()) -> dict:
 
 def find_store(line, stores=()):
     """The store a line names with "@" or with from/at + a known store: (name, is new), or (None, False)."""
-    return _split_store(" ".join(line.split()), store_names(stores))[1:]
+    return _split_store(split_date(split_expiry(" ".join(line.split()))[0])[0], store_names(stores))[1:]
 
 
 def title_store(typed) -> str:
@@ -243,7 +459,8 @@ def numbers_in(text) -> list:
     return [float(number) for number in re.findall(_NUMBER, text)]
 
 
-def _entry(action, phrase, raw, quantity=None, price=None, store=None, store_is_new=False, explicit=False) -> dict:
+def _entry(action, phrase, raw, quantity=None, price=None, store=None, store_is_new=False, explicit=False,
+           on=None, expiry=None) -> dict:
     return {
         "explicit": explicit,
         "action": action,
@@ -252,6 +469,8 @@ def _entry(action, phrase, raw, quantity=None, price=None, store=None, store_is_
         "total_price": price,
         "store": store,
         "store_is_new": store_is_new,
+        "on": on,
+        "expiry": expiry,
         "raw": raw,
     }
 
@@ -285,7 +504,18 @@ def _split_store(text, names):
         known = word.lower() in STORE_WORDS and names.get(squash(" ".join(words[index + 1:])))
         if known:
             return " ".join(words[:index]), known, False
+    # "… $21.85 taobao": a known store written last, straight after the price or quantity, is the store too.
+    for size in (3, 2, 1):
+        known = len(words) > size and _is_amount(words[-size - 1]) and names.get(squash(" ".join(words[-size:])))
+        if known:
+            return " ".join(words[:-size]), known, False
     return text, None, False
+
+
+def _is_amount(token) -> bool:
+    """Whether a word is a price or a quantity, or ends one ("$1.58", "18x7pcs", the "pcs" of "5 pcs")."""
+    core = token.strip(",;").rstrip(".")
+    return any(character.isdigit() for character in core) or unit_word(core) is not None
 
 
 def _read(text, units, loose=False):
@@ -369,8 +599,11 @@ def _join_packs_of(parts, units, loose):
     if found == ["amount", "packs"]:
         count = next(q for q in quantities if q["kind"] == "packs")
         amount = next(q for q in quantities if q["kind"] == "amount")
-        # "2 packs ... 10 rolls each". Without "each" the size could be the total, unless it is one pack.
-        if count["packs"] == 1 or any(word in _EACH for word in words):
+        # "2 packs ... 10 rolls each". Without "each" rolls or pieces could be the total ("2 packs 10 rolls"),
+        # unless it is one pack. A weight or volume after the count is the size on the label, even with
+        # the brand between: "4 bottles 400ml", "2 bottles vete 800ml".
+        label = amount["unit"] in ("g", "ml") and parts.index(amount) > parts.index(count)
+        if count["packs"] == 1 or label or any(word in _EACH for word in words):
             return [_from_pair(count, amount)]
     for index in of_amount:
         named_pack = isinstance(parts[index], str) and unit_word(parts[index], units) == (PACK, 1)

@@ -2,21 +2,25 @@
 Slash commands (PLAN.md §8.4).
 Phase 1a: /listitems, /list, /items, /undo, /alias, /rename, /set, /unit, /brand, /listbrands, /forget, /stats,
 /help, /ping.
+Phase 2: /price.
+Brought forward from Phase 5: /use (what to use next, by expiry date).
 (/add, /bought, /used and /stocktake are entries, not commands: handler.py sends them through the format parser.)
 """
 import re
+from datetime import datetime
 
 import ai
 import apply
 import matcher
 import model
+import pricing
 import replies
 import store
 import structured
 
 UNDO_WINDOW_SECONDS = 24 * 60 * 60
 MAX_BRAND_LENGTH = 30
-LATER_PHASES = ("/status", "/price", "/fx", "/expiring")
+LATER_PHASES = ("/status", "/fx", "/expiring")
 
 
 def handle(text, sender, now):
@@ -33,6 +37,10 @@ def handle(text, sender, now):
         return replies.cellar(store.list_items())
     if command == "/list":
         return _list(args[0] if args else "")
+    if command == "/price":
+        return _price(args[0] if args else "", now)
+    if command == "/use":
+        return _use(args[0] if args else "", now)
     if command == "/undo":
         return _undo(sender, now)
     if command == "/alias":
@@ -55,6 +63,20 @@ def handle(text, sender, now):
     if command in LATER_PHASES:
         return replies.NOT_AVAILABLE_YET
     return None
+
+
+def _use(args, now) -> str:
+    """/use <item>: which of what is at home to use next, the one that expires first."""
+    target = " ".join(args.split())
+    if not target:
+        return replies.USE_USAGE
+    item = _find_item(target, store.list_items(), close=True)
+    if item is None:
+        return replies.unknown_item(target)
+    events = store.list_events(item["item_id"])
+    apply.recompute(item, events)
+    today = datetime.fromtimestamp(now, apply.SGT).date()
+    return replies.use_next(item, model.batches_left(events, item.get("pack_size")), today)
 
 
 def _undo(sender, now) -> str:
@@ -126,7 +148,7 @@ def _list(args) -> str:
     """/list <item>: how much of one item is left, and of which brands."""
     target = " ".join(args.split())
     if not target:
-        return replies.LIST_USAGE  # /list on its own is kept for the shopping list (Phase 2)
+        return replies.LIST_USAGE  # /list on its own is kept for the shopping list (Phase 3)
     item = _find_item(target, store.list_items(), close=True)
     if item is None:
         return replies.unknown_item(target)
@@ -134,6 +156,18 @@ def _list(args) -> str:
     events = store.list_events(item["item_id"])
     apply.recompute(item, events)
     return replies.item_detail(item, model.brands_left(events, item.get("pack_size")))
+
+
+def _price(args, now) -> str:
+    """/price <item>: one item's best, usual and latest prices."""
+    target = " ".join(args.split())
+    if not target:
+        return replies.PRICE_USAGE
+    item = _find_item(target, store.list_items(), close=True)
+    if item is None:
+        return replies.unknown_item(target)
+    events = store.list_events(item["item_id"])
+    return replies.price_book(item, pricing.price_points(events, now), pricing.other_currencies(events))
 
 
 def _rename(args) -> str:

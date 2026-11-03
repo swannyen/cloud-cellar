@@ -83,7 +83,7 @@ def move(source_id, target_id, text, name=None):
 def _repoint_undo(target, event):
     """/undo has to find a recent entry where it lives now."""
     user_id, sk = event.get("user_id"), event["sk"]
-    if user_id is not None and any(recent["sk"] == sk for recent in store.list_recent_events(user_id)):
+    if user_id is not None and any(recent["event_sk"] == sk for recent in store.list_recent_events(user_id)):
         apply.remember_for_undo(target, event, sk)
 
 

@@ -1,4 +1,4 @@
-"""Button taps (PLAN.md §4.3). Phase 1a has the match confirmations; nudge buttons arrive in Phase 2.
+"""Button taps (PLAN.md §4.3). Phase 1a has the match confirmations; nudge buttons arrive in Phase 3.
 
 A guessed match is recorded straight away and shown with two buttons:
 "m:same:<update_id>:<line>" keeps it and saves the phrase as an alias, and

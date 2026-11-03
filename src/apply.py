@@ -13,6 +13,7 @@ import claude_api
 import config
 import matcher
 import model
+import pricing
 import replies
 import store
 import structured
@@ -20,7 +21,7 @@ import structured
 logger = logging.getLogger()
 
 MAX_SLUG = 40          # keeps "a:<action>:<item_id>" button data under Telegram's 64 bytes
-MAX_RAW_TEXT = 300
+MAX_RAW_TEXT = 4096   # the longest a Telegram message can be: the whole message is kept
 MAX_ALIASES = 30
 MAX_ALIAS_LENGTH = 40
 MAX_BRANDS = 20
@@ -38,15 +39,34 @@ def apply_entries(entries, *, items, sender, update_id, at, brands=()) -> tuple:
     """Record each entry. Returns (reply lines, STATS counts, button rows).
 
     items is the tracked-item list; items created here are added to it. brands
-    are the names taught with /brand. at is the event time as an ISO UTC
-    string. Nothing is recorded for an entry whose phrase isn't a household
+    are the names taught with /brand. at is when the message was sent, as an
+    ISO UTC string. Nothing is recorded for an entry whose phrase isn't a household
     product (it gets a reply only if the line began with "+", "-", "?" or an entry command), or
-    whose quantity can't be worked out without guessing (the reply asks).
+    whose quantity or date can't be worked out without guessing (the reply asks),
+    and nothing is recorded for a count whose quantity was written but can't be
+    read, or for a line in the format whose expiry isn't a real date.
     """
     lines, buttons, counts = [], [], Counter()
     for index, entry in enumerate(entries):
         entry = dict(entry)  # resolving may take a brand off the phrase
         free_text = entry.get("free_text", False)
+        # Checked first, so that a line that won't be recorded doesn't cost an AI call or make a new item.
+        happened = _when_it_happened(entry, at)
+        if happened in (structured.BAD_DATE, structured.FUTURE_DATE):
+            counts["lines_rejected"] += 1
+            problem = replies.date_problem(entry["on"], happened)
+            if problem not in lines:  # free text: one date, on every entry of the message
+                lines.append(problem)
+            continue
+        expires_on = _expiry_date(entry, happened)
+        if expires_on == structured.BAD_EXPIRY:
+            if not free_text:
+                counts["lines_rejected"] += 1
+                if replies.EXPIRY_HINT not in lines:
+                    lines.append(replies.EXPIRY_HINT)
+                continue
+            entry["missed"] = (*entry.get("missed", ()), "expiry")  # the rest of what was said still counts
+            expires_on = None
         try:
             item, how = (_resolve_named if free_text else _resolve_item)(entry, items, brands, at)
         except claude_api.ClaudeError:
@@ -63,6 +83,11 @@ def apply_entries(entries, *, items, sender, update_id, at, brands=()) -> tuple:
                 lines.append(replies.not_a_product(entry["phrase"]))
             continue
         guessed = entry["phrase"] if how in GUESSES else None
+        if entry["action"] == "stock_count" and "quantity" in entry.get("missed", ()):
+            # Taken as one pack, a count would replace the real figure with it.
+            counts["lines_rejected"] += 1
+            lines.append(replies.count_unread(item, entry, guessed))
+            continue
         amount = _amount(entry, item)
         if amount == structured.NEED_PACK_SIZE:
             counts["lines_rejected"] += 1
@@ -78,16 +103,20 @@ def apply_entries(entries, *, items, sender, update_id, at, brands=()) -> tuple:
             continue
         if not free_text:
             counts["lines_structured"] += 1
-        record = _event_record(entry, amount, sender, at, how)
+        record = _event_record(entry, amount, sender, happened, at, how, expires_on)
+        verdict = _price_verdict(item, record)  # before the entry is written, so it only meets earlier prices
         # The index keeps two events for one item in one message from overwriting each other.
-        sk = f"{at}#{update_id}#{index}"
+        sk = f"{happened}#{update_id}#{index}"
         store.put_event(item["item_id"], sk, record)
         remember_for_undo(item, record, sk)
         if entry.get("store_is_new"):
             store.save_store(slugify(entry["store"]), entry["store"], at)
+        stock_before = item.get("stock_est")
         refresh_item(item)
+        old_purchase = entry["action"] == "bought" and record["logged_at"]
         lines.append(replies.event_line(
-            item, record, created=how == "new", read_from=guessed, missed=entry.get("missed", ())
+            item, record, created=how == "new", read_from=guessed, missed=entry.get("missed", ()), verdict=verdict,
+            already_counted=bool(old_purchase) and item.get("stock_est") == stock_before,
         ))
         if guessed:
             # A wrong guess is put right with one tap: see confirm_same and split_into_new_item.
@@ -167,7 +196,7 @@ def split_into_new_item(pending):
     if old:
         refresh_item(old)
     # /undo has to find the event where it lives now.
-    if any(recent["sk"] == sk for recent in store.list_recent_events(event["user_id"])):
+    if any(recent["event_sk"] == sk for recent in store.list_recent_events(event["user_id"])):
         remember_for_undo(new, event, sk)
     return new
 
@@ -266,6 +295,33 @@ def _create_item(name, base_unit, items, at, phrase=None):
     return item
 
 
+def _when_it_happened(entry, at):
+    """The time to record an entry at, as an ISO UTC string, or structured.BAD_DATE / FUTURE_DATE.
+
+    That is when it was sent, unless a date is written on it. A date has no
+    time, so it is noon in Singapore: the middle of that day, whatever the zone.
+    """
+    if not entry.get("on"):
+        return at
+    today = datetime.fromtimestamp(epoch(at), SGT).date()
+    day = structured.resolve_date(entry["on"], today)
+    if day in (structured.BAD_DATE, structured.FUTURE_DATE):
+        return day
+    return at if day == today else iso_utc(datetime(day.year, day.month, day.day, 12, tzinfo=SGT).timestamp())
+
+
+def _expiry_date(entry, happened):
+    """The entry's expiry as an ISO date, None, or structured.BAD_EXPIRY for a date that doesn't exist.
+
+    Only purchases and counts keep one: they are what is at home. A date with no
+    year, or "exp 5d", goes by the day the entry happened.
+    """
+    if not entry.get("expiry") or entry["action"] not in ("bought", "stock_count"):
+        return None
+    day = structured.resolve_expiry(entry["expiry"], datetime.fromtimestamp(epoch(happened), SGT).date())
+    return day if day == structured.BAD_EXPIRY else day.isoformat()
+
+
 def _amount(entry, item):
     """The entry's total for this item (see structured.resolve_quantity), or why it can't be known."""
     if entry["action"] not in ("bought", "used", "stock_count", "price_check"):
@@ -277,7 +333,7 @@ def _typed_unit(entry):
     return (entry.get("quantity") or {}).get("unit")
 
 
-def _event_record(entry, amount, sender, at, how) -> dict:
+def _event_record(entry, amount, sender, happened, sent_at, how, expires_on=None) -> dict:
     total_price = round(entry["total_price"], 2) if entry["total_price"] else None
     return {
         "action": entry["action"],
@@ -287,13 +343,24 @@ def _event_record(entry, amount, sender, at, how) -> dict:
         "currency": config.home_currency(),
         "store": entry["store"],
         "brand": entry.get("brand"),
+        "adds": True if entry.get("adds") else None,  # "I have another 3": added to the count, not a new count
+        "expires_on": expires_on,
         "user_id": sender["id"],
         "user_name": sender["name"],
         "raw_text": entry["raw"][:MAX_RAW_TEXT],
         "source": "chat",
         "parse_path": _parse_path(entry, how),
-        "at": at,
+        "at": happened,
+        "logged_at": sent_at if happened != sent_at else None,  # only on an entry dated in the past
     }
+
+
+def _price_verdict(item, record):
+    """How the entry's price compares with the item's earlier ones, or None if it has no price to compare."""
+    if record["action"] not in pricing.PRICED_ACTIONS or not record["unit_price"]:
+        return None
+    events = store.list_events(item["item_id"])
+    return pricing.verdict(record["unit_price"], pricing.price_points(events, epoch(record["at"]), record["currency"]))
 
 
 def _parse_path(entry, how) -> str:
@@ -317,12 +384,14 @@ def _update_pack_size(item, events):
 
 
 def remember_for_undo(item, event, sk):
-    store.add_recent_event(event["user_id"], sk, {
+    """/undo goes by when an entry was logged, so an old receipt can be undone like anything else."""
+    logged_at = event.get("logged_at") or event["at"]
+    store.add_recent_event(event["user_id"], logged_at + sk[sk.index("#"):], {
         "event_pk": store.event_pk(item["item_id"]),
         "event_sk": sk,
         "item_name": item["name"],
         "summary": replies.summary(item, event),
-        "at": event["at"],
+        "at": logged_at,
     })
 
 

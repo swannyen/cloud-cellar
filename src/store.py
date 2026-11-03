@@ -75,8 +75,14 @@ def put_event(item_id, sk, event):
 
 
 def list_events(item_id) -> list:
-    """The item's events, oldest first."""
-    return _query(event_pk(item_id))
+    """The item's events, oldest first, and the lines of one message in the order they were written."""
+    return sorted(_query(event_pk(item_id)), key=_event_order)
+
+
+def _event_order(event):
+    """DynamoDB sorts "…#10" before "…#2", so the line number is compared as a number."""
+    message, _, line = event["sk"].rpartition("#")
+    return (message, int(line)) if line.isdigit() else (event["sk"], 0)
 
 
 def get_event(pk, sk):
@@ -90,7 +96,7 @@ def delete_event(pk, sk):
 # --- Each user's recent events (for /undo) -------------------------------------
 
 def add_recent_event(user_id, sk, record):
-    """Remember an event the user just logged. sk is the event's own sort key.
+    """Remember an event the user just logged. sk starts with when it was logged, so they sort in that order.
 
     DynamoDB removes the record some time after 24 hours; callers still check its age.
     """

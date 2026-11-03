@@ -1,7 +1,9 @@
 """Message text the bot sends (PLAN.md §4.4)."""
-from datetime import datetime
+from datetime import date, datetime
 
 import model
+import pricing
+import structured
 
 HELP = """\
 Log one thing per line. Start the line with what happened:
@@ -27,12 +29,25 @@ How much:
 
 Price and store:
 $12.90 or a plain 12.90 is the total paid.
-The store goes last: @giant, or from/at a store I already know.
+The store goes last: @giant, or from/at a store I already know, or just the name of one I know: $12.90 taobao.
+
+Counting a cupboard? Send it in as many lines or messages as you like.
+On one day they add up, brand by brand. A brand counted again that day replaces its earlier figure.
+
+From an old receipt? Add the date, day first:
++ rice 5kg $12 @ntuc on 15/09/2026
+With no year (on 15/9), it's the last time that date came round.
+
+Expiry dates: add one to a bought or count line, or write it the way you would in a sentence:
+have shampoo 2x550ml exp jan 2028 — also exp 31/12/2026, exp 12/27, exp 5d
+A month on its own means the 1st of that month, so nothing is used after its date.
 
 See what's there:
 /listitems — what's in the cellar, and how much
 /list toilet paper — one item: how much is left, and of which brands
 /items — the same items with their IDs and pack sizes
+/price toilet paper — one item's best, usual and latest prices
+/use body wash — which one to use next: the one that expires first
 /listbrands — brands on what we've bought
 /stats — how many lines needed AI this month
 
@@ -47,6 +62,12 @@ Fix or teach:
 When I had to guess the item, tap Same item or New item under my reply."""
 
 FORMAT_HINT = "Didn't catch that. Try: + rice 5kg $12 @ntuc — or /help for all formats."
+DATE_FORMAT = "Write it as day/month/year, like: + rice 5kg $12 @ntuc on 15/09/2026"
+DATE_HINT = f"I can't read that date, so that line isn't recorded. {DATE_FORMAT}"
+EXPIRY_HINT = ("I can't read that expiry, so that line isn't recorded. Write it after exp, like: "
+               "exp 31/12/2026, exp 12/27 or exp jan 2028 (a month on its own means its 1st).")
+USE_USAGE = "Which one to use next? Send /use and the item, e.g. /use body wash"
+USE_AFTER = 3   # how many lots /use lists after the one to use next
 FREE_TEXT_FAILED = "I couldn't read that just now. Please send it again, or use the format (/help)."
 NO_ITEMS = "No items yet. Log one like this: + rice 5kg $12 @ntuc"
 NOT_AVAILABLE_YET = "That command isn't available yet."
@@ -56,6 +77,7 @@ SET_USAGE = "Use it like this: /set toilet paper pack 10"
 UNIT_USAGE = "Use it like this: /unit sticks = pcs"
 BRAND_USAGE = "Use it like this: /brand kans"
 LIST_USAGE = "Use it like this: /list toilet paper — for how much is left and of which brands. /listitems shows everything."
+PRICE_USAGE = "Use it like this: /price toilet paper — for its best, usual and latest prices."
 RENAME_USAGE = "Use it like this: /rename dish soap = dishwashing liquid"
 FORGET_USAGE = ("Use it like this: /forget alias loo roll — or /forget brand kans — or /forget unit sticks "
                 "— or /forget store giant")
@@ -70,22 +92,31 @@ _COUNT_UNITS = {"piece": "pieces", "roll": "rolls", "sheet": "sheets"}
 # For the examples in questions: (a pack size, the unit word to type).
 _EXAMPLES = {"piece": (5, "pcs"), "roll": (10, "rolls"), "sheet": (100, "sheets"), "g": (5, "kg"), "ml": (1, "L")}
 _KEYWORDS = {"bought": "+", "used": "-", "stock_count": "have", "price_check": "?"}
+LATEST_PRICES = 5
 
 
-def event_line(item, event, created=False, read_from=None, missed=()) -> str:
+def event_line(item, event, created=False, read_from=None, missed=(), verdict=None, already_counted=False) -> str:
     """The one-line confirmation for a recorded event.
 
     read_from is the sender's phrase when the item was a guess (a close spelling or
     the AI's match). missed names what the AI gave that wasn't in the message.
+    verdict is pricing.verdict, for an entry with a price to compare.
+    already_counted is for a purchase dated before a count or a run-out, which
+    is why it leaves the stock as it was.
     """
     text = describe(item, event, name_suffix=" (new item)" if created else "")
     if event["action"] == "used" and item.get("stock_est") is not None:
         # item is as it stands after the entry, so this is what the family should still find at home.
         text += f", {_stock(item)} left" if item["stock_est"] else ", none left"
+    if event["action"] == "stock_count" and item.get("stock_est") not in (None, model.event_qty(event, item.get("pack_size"))):
+        # The count adds to the day's stocktake, or to what was there. Sizes differ in a stocktake, so no pack count.
+        text += f", {quantity(item['stock_est'], item['base_unit'])} in all"
     tick = "" if event["action"] == "price_check" else "✓ "
     notes = f' (Read "{read_from}" as {item["name"]}.)' if read_from else ""
     notes += f" (Didn't catch the {' or '.join(missed)}.)" if missed else ""
-    return f"{tick}{text}.{notes}"
+    notes += " (Stock stays the same: it was counted or ran out after that date.)" if already_counted else ""
+    compared = f" {price_verdict(verdict, item['base_unit'])}" if verdict else ""
+    return f"{tick}{text}.{compared}{notes}"
 
 
 def describe(item, event, name_suffix="") -> str:
@@ -101,21 +132,143 @@ def summary(item, event) -> str:
     store = f" at {event['store']}" if event.get("store") else ""
     per_unit = unit_price(event["unit_price"], unit) if event.get("unit_price") else ""
     action = event["action"]
+    dated = _dated(event)
     if action == "bought":
         text = "bought" + _join(amount, f"for {price}" if price else "") + store
-        return text + (f" ({per_unit})" if per_unit else "")
+        return text + (f" ({per_unit})" if per_unit else "") + dated + _expires(event)
     if action == "price_check":
         text = price + (f" for {amount}" if amount else "")
-        return text + (f" = {per_unit}" if per_unit else "") + store + ". Price noted"
+        return text + (f" = {per_unit}" if per_unit else "") + store + dated + ". Price noted"
     if action == "stock_count":
-        return f"counted {amount} in stock" if amount else "noted as in stock"
+        more = " more" if event.get("adds") else ""
+        return (f"counted {amount}{more} in stock" if amount else "noted as in stock") + dated + _expires(event)
     if action == "opened_last":
-        return "marked as running low"  # also used for "running low", not only "opened the last one"
+        return "marked as running low" + dated  # also used for "running low", not only "opened the last one"
     if action == "used":
-        return f"used {amount}" if amount else "used some"
+        return (f"used {amount}" if amount else "used some") + dated
     if action == "finished":
-        return "marked finished"
-    return "noted, still have plenty"  # still_have
+        return "marked finished" + dated
+    return "noted, still have plenty" + dated  # still_have
+
+
+def _dated(event) -> str:
+    """The day an entry dated in the past happened, spelled out so that a misread date is obvious."""
+    if not event.get("logged_at"):
+        return ""
+    day = datetime.fromisoformat(event["at"].replace("Z", "+00:00")).astimezone(pricing.SGT)
+    return f" on {day:%a} {day.day} {day:%b %Y}"
+
+
+def _expires(event) -> str:
+    """", expires Jan 2028", or ", expired ..." for something past its date when it was logged."""
+    if not event.get("expires_on"):
+        return ""
+    on = date.fromisoformat(event["expires_on"])
+    logged = datetime.fromisoformat((event.get("logged_at") or event["at"]).replace("Z", "+00:00"))
+    return f", {'expired' if on < logged.astimezone(pricing.SGT).date() else 'expires'} {expiry_day(on)}"
+
+
+def expiry_day(on) -> str:
+    """An expiry date in full, "1 Jan 2028", so that a month on its own is seen to mean its first day."""
+    return f"{on.day} {on:%b %Y}"
+
+
+def use_next(item, batches, today) -> str:
+    """The /use reply: which lot to use next, by earliest expiry. batches is model.batches_left."""
+    name = item["name"]
+    if not batches:
+        return f"There's no {name} left, as far as I know." if item.get("stock_est") == 0 else (
+            f"{name} hasn't been counted yet. Count it with its expiry, like: have {name.lower()} 2x{_example(item)} exp 01/2028")
+    if not any(batch["expires_on"] for batch in batches):
+        return (f"No expiry dates are recorded for {name}, so I can't tell which goes first. "
+                f"Count it again with them, like: have {name.lower()} 2x{_example(item)} exp 01/2028")
+    first, *rest = batches
+    lines = [f"{name}: use this one next.", f"• {_batch(first, item, today)}"]
+    if rest:
+        lines.append("After that:")
+        lines += [f"• {_batch(batch, item, today)}" for batch in rest[:USE_AFTER]]
+    if len(rest) > USE_AFTER:
+        lines.append(f"…and {len(rest) - USE_AFTER} more. /list {name.lower()} shows them by brand.")
+    return "\n".join(lines)
+
+
+def _batch(batch, item, today) -> str:
+    """One lot for /use: "Lux, 4 × 400 g, expires Jul 2028"."""
+    unit = item["base_unit"]
+    amount, size = batch["amount"], batch["size"]
+    packs = amount / size if size else None
+    how_much = f"{_number(packs)} × {quantity(size, unit)}" if packs and packs == int(packs) else quantity(amount, unit)
+    if batch["expires_on"]:
+        on = date.fromisoformat(batch["expires_on"])
+        when = f"expired {expiry_day(on)}, so check it first" if on < today else f"expires {expiry_day(on)}"
+    else:
+        when = "no expiry noted"
+    return f"{batch['brand'] or 'no brand'}, {how_much}, {when}"
+
+
+def _example(item) -> str:
+    size, word = _EXAMPLES[item["base_unit"]]
+    return f"{size}{word}"
+
+
+def date_problem(on, problem) -> str:
+    """Why a line wasn't recorded. on is the entry's date as read, and problem is what resolve_date made of it."""
+    if on == structured.BAD_DATE:
+        return DATE_HINT
+    if problem == structured.FUTURE_DATE:
+        return f"{on['written']} hasn't happened yet, so that line isn't recorded. {DATE_FORMAT}"
+    return f"{on['written']} isn't a date, so that line isn't recorded. {DATE_FORMAT}"
+
+
+def price_verdict(verdict, base_unit) -> str:
+    """The sentence after a priced entry: how its price compares with the earlier ones (PLAN.md §8.2)."""
+    kind = verdict["kind"]
+    if kind == pricing.FIRST:
+        return "First price recorded."
+    best = _price_at(verdict["best"], base_unit)
+    if kind == pricing.BEST:
+        if verdict["price"] < verdict["best"]["unit_price"]:
+            return f"🔥 Best price yet. It was {best}."
+        return f"🔥 As good as your best: {best}."
+    if kind == pricing.GOOD:
+        return f"Good price. Best seen: {best}."
+    if kind == pricing.ABOVE:
+        return f"Above usual (usually {unit_price(verdict['usual'], base_unit)}). Best seen: {best}."
+    return f"Typical price. Best seen: {best}."
+
+
+def price_book(item, points, other_currencies=()) -> str:
+    """The /price reply. points is pricing.price_points; other_currencies aren't compared with them."""
+    unit = item["base_unit"]
+    if points:
+        best = pricing.best_point(points)
+        lines = [f"{item['name']}: prices over the last 12 months",
+                 f"Best: {_price_at(best, unit)}, {_day(best['day'])}"]
+        if len(points) > 1:
+            lines.append(f"Usual: {unit_price(pricing.usual_price(points), unit)}")
+        lines.append("Latest:")
+        lines += [_price_line(point, unit) for point in reversed(points[-LATEST_PRICES:])]
+    else:
+        lines = [f"No prices for {item['name']} in the last 12 months."]
+    if other_currencies:
+        lines.append(f"Also logged in {', '.join(other_currencies)}. I don't compare those yet.")
+    return "\n".join(lines)
+
+
+def _price_line(point, base_unit) -> str:
+    """One line of /price: "• 9 Oct: $0.15/piece at Taobao, paid, logged twice"."""
+    count = point["entries"]
+    logged = "" if count == 1 else ", logged twice" if count == 2 else f", logged {count} times"
+    return f"• {_day(point['day'])}: {_price_at(point, base_unit)}, {'paid' if point['paid'] else 'seen'}{logged}"
+
+
+def _price_at(point, base_unit) -> str:
+    store = f" at {point['store']}" if point["store"] else ""
+    return unit_price(point["unit_price"], base_unit) + store
+
+
+def _day(day) -> str:
+    return f"{day.day} {day:%b}"
 
 
 def undone(item_name, what) -> str:
@@ -146,12 +299,20 @@ def ask_packs_or_units(item, entry, read_from=None) -> str:
             f"{_guess_note(item, read_from)}")
 
 
+def count_unread(item, entry, read_from=None) -> str:
+    """Sent instead of recording a count whose quantity couldn't be read: taken as one pack, it would replace the real figure."""
+    size, word = _EXAMPLES[item["base_unit"]]
+    return (f"Couldn't read how much {item['name']} that counts, so it isn't recorded. "
+            f"Resend like: {_resend(entry, f'2x{size}{word}')}{_guess_note(item, read_from)}")
+
+
 def _resend(entry, amount) -> str:
     """The sender's line in the format with the amount filled in, keeping the brand, price and store."""
     price = f" {money(entry['total_price'])}" if entry.get("total_price") else ""
     store = f" @{entry['store']}" if entry.get("store") else ""
     named = " ".join(filter(None, [entry.get("brand"), entry["phrase"]])).lower()
-    return f"{_KEYWORDS.get(entry['action'], '+')} {named} {amount}{price}{store}"
+    on = f" on {entry['on']['written']}" if entry.get("on") else ""  # or it would be logged as today
+    return f"{_KEYWORDS.get(entry['action'], '+')} {named} {amount}{price}{store}{on}"
 
 
 def _guess_note(item, read_from) -> str:
@@ -376,7 +537,7 @@ def item_detail(item, by_brand) -> str:
     brands = [brand for brand, _ in by_brand if brand]
     if brands:
         # Nobody logs which pack they opened, so this is worked out, not counted.
-        lines.append("By brand, if the oldest is used first:")
+        lines.append("By brand, if what expires first is used first:")
         lines += [f"• {brand or 'no brand'} — {quantity(amount, unit)}" for brand, amount in by_brand]
     elif by_brand:
         lines.append("Brand: not noted")
