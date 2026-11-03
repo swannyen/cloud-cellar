@@ -767,5 +767,22 @@ class UseCommandTest(CommandTestCase):
         self.assertIn("/use", replies.HELP)
 
 
+
+class UseDescriptionTest(CommandTestCase):
+    """/use names each lot by its brand and description, so the right bottle can be found."""
+
+    def test_brand_and_description_or_the_description_alone(self):
+        self.add_item("body-wash", "Body wash", "ml", brands=["半亩花田"])
+        self.record("have 半亩花田 body wash 1x400ml (pink) exp 09/2028\nhave body wash 1x475ml (green tea fragrance) exp 11/2028\n"
+                    "have body wash 1x500ml exp 03/2029")
+        self.assertEqual(commands.handle("/use body wash", MEI, NOW), "\n".join([
+            "Body wash: use this one next.",
+            "• 半亩花田 pink, 1 × 400 ml, expires 1 Sep 2028",
+            "After that:",
+            "• green tea fragrance, 1 × 475 ml, expires 1 Nov 2028",
+            "• no brand, 1 × 500 ml, expires 1 Mar 2029",
+        ]))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -155,5 +155,18 @@ class NormaliseTest(unittest.TestCase):
         self.assertEqual(matcher.names({"item_id": "x", "name": "Eggs"}), {"egg"})
 
 
+
+class BrandAtTheEndTest(unittest.TestCase):
+    ITEMS = [item("hand-wash", "Hand wash")]
+
+    def test_a_known_brand_at_the_end_with_or_without_from(self):
+        for phrase in ("hand wash from aesop", "hand wash aesop", "hand wash by Aesop"):
+            with self.subTest(phrase=phrase):
+                self.assertEqual(matcher.match_phrase(phrase, self.ITEMS, ["Aesop"]), (("hand-wash", "exact"), "hand wash", "Aesop"))
+
+    def test_an_unknown_word_at_the_end_stays(self):
+        self.assertEqual(matcher.match_phrase("hand wash from aesop", self.ITEMS)[1:], ("hand wash from aesop", None))
+
+
 if __name__ == "__main__":
     unittest.main()

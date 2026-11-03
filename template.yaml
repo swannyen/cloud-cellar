@@ -12,7 +12,7 @@ Globals:
     Runtime: python3.13
     Architectures: [arm64]
     MemorySize: 256
-    Timeout: 30
+    Timeout: 60   # a long stocktake keeps the free-text call busy for up to 45 s (src/claude_api.py)
     CodeUri: src/
     Environment:
       Variables:

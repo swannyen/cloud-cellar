@@ -8,16 +8,19 @@ import structured
 HELP = """\
 Log one thing per line. Start the line with what happened:
 
-+ toilet paper 2x10 $12.90 @fairprice — bought
++ toilet paper 2x10 $12.90 @fairprice — bought or found: adds to what's there, price optional
 - toilet paper 2 — used 2 packs
+/used hand wash — used one pack: the next one to use
 - dish soap — ran out, nothing left
 low shampoo — on the last one
 have rice 2x5kg — count what's at home
 ? detergent 3kg $8.95 @shengsiong — is this a good price?
 
 Other ways to start a line:
-bought: bought, buy, add, /add, /bought
-used or ran out: done, finished, out, /used
+bought or found: bought, buy, add, /add
+bought, with its price: /bought
+ran out (or used, with an amount): done, finished, out
+used: /used — one pack if you don't say how much
 last one: last
 count: /stocktake
 price check: price
@@ -83,6 +86,8 @@ FORGET_USAGE = ("Use it like this: /forget alias loo roll — or /forget brand k
                 "— or /forget store giant")
 NO_BRANDS = "No brands yet. Teach me one with /brand <name>."
 ENTRY_COMMAND_USAGE = "Use it like this: /add rice 5kg $12 @ntuc — or /used dish soap — or /stocktake rice 2x5kg"
+NO_PRICE_HINT = ("No price on that, so it isn't recorded. Add the price, like /bought rice 5kg $12 "
+                 "— or use /add if there isn't one.")
 TOO_OLD_TO_CHANGE = "Too old to change — use /alias or /undo"
 ENTRY_WAS_UNDONE = "That entry was undone, so there is nothing to change."
 BUTTON_FAILED = "Sorry, that didn't work — please try again"
@@ -105,6 +110,8 @@ def event_line(item, event, created=False, read_from=None, missed=(), verdict=No
     is why it leaves the stock as it was.
     """
     text = describe(item, event, name_suffix=" (new item)" if created else "")
+    if event["action"] in ("finished", "opened_last") and event.get("brand") and item.get("stock_est"):
+        text += f", {quantity(item['stock_est'], item['base_unit'])} left"   # the other brands are still there
     if event["action"] == "used" and item.get("stock_est") is not None:
         # item is as it stands after the entry, so this is what the family should still find at home.
         text += f", {_stock(item)} left" if item["stock_est"] else ", none left"
@@ -135,19 +142,24 @@ def summary(item, event) -> str:
     dated = _dated(event)
     if action == "bought":
         text = "bought" + _join(amount, f"for {price}" if price else "") + store
-        return text + (f" ({per_unit})" if per_unit else "") + dated + _expires(event)
+        return text + (f" ({per_unit})" if per_unit else "") + dated + _described(event) + _expires(event)
     if action == "price_check":
         text = price + (f" for {amount}" if amount else "")
         return text + (f" = {per_unit}" if per_unit else "") + store + dated + ". Price noted"
     if action == "stock_count":
-        more = " more" if event.get("adds") else ""
-        return (f"counted {amount}{more} in stock" if amount else "noted as in stock") + dated + _expires(event)
+        if event.get("adds"):
+            text = f"added {amount} to the stock" if amount else "added to the stock"
+        else:
+            text = f"counted {amount} in stock" if amount else "noted as in stock"
+        return text + dated + _described(event) + _expires(event)
+    named = f"{event['brand']} " if event.get("brand") else ""   # "Aesop marked finished": only that brand
     if action == "opened_last":
-        return "marked as running low" + dated  # also used for "running low", not only "opened the last one"
+        return f"{named}marked as running low" + dated  # also used for "running low", not only "opened the last one"
     if action == "used":
-        return (f"used {amount}" if amount else "used some") + dated
+        brand = f": {event['brand']}" if event.get("brand") else ""   # whose bottle it was
+        return (f"used {amount}" if amount else "used some") + brand + dated
     if action == "finished":
-        return "marked finished" + dated
+        return f"{named}marked finished" + dated
     return "noted, still have plenty" + dated  # still_have
 
 
@@ -157,6 +169,13 @@ def _dated(event) -> str:
         return ""
     day = datetime.fromisoformat(event["at"].replace("Z", "+00:00")).astimezone(pricing.SGT)
     return f" on {day:%a} {day.day} {day:%b %Y}"
+
+
+def _described(event) -> str:
+    """": 半亩花田 pink" for a pack with a description, so the reply shows how it was read."""
+    if not event.get("description"):
+        return ""
+    return ": " + " ".join(filter(None, [event.get("brand"), event["description"]]))
 
 
 def _expires(event) -> str:
@@ -193,7 +212,7 @@ def use_next(item, batches, today) -> str:
 
 
 def _batch(batch, item, today) -> str:
-    """One lot for /use: "Lux, 4 × 400 g, expires Jul 2028"."""
+    """One lot for /use: "Lux white tea, 4 × 400 g, expires 1 Jul 2028"."""
     unit = item["base_unit"]
     amount, size = batch["amount"], batch["size"]
     packs = amount / size if size else None
@@ -203,7 +222,8 @@ def _batch(batch, item, today) -> str:
         when = f"expired {expiry_day(on)}, so check it first" if on < today else f"expires {expiry_day(on)}"
     else:
         when = "no expiry noted"
-    return f"{batch['brand'] or 'no brand'}, {how_much}, {when}"
+    named = " ".join(filter(None, [batch["brand"], batch.get("description")])) or "no brand"
+    return f"{named}, {how_much}, {when}"
 
 
 def _example(item) -> str:
@@ -312,7 +332,8 @@ def _resend(entry, amount) -> str:
     store = f" @{entry['store']}" if entry.get("store") else ""
     named = " ".join(filter(None, [entry.get("brand"), entry["phrase"]])).lower()
     on = f" on {entry['on']['written']}" if entry.get("on") else ""  # or it would be logged as today
-    return f"{_KEYWORDS.get(entry['action'], '+')} {named} {amount}{price}{store}{on}"
+    keyword = "+" if entry.get("adds") else _KEYWORDS.get(entry["action"], "+")   # "+" adds; "have" would replace
+    return f"{keyword} {named} {amount}{price}{store}{on}"
 
 
 def _guess_note(item, read_from) -> str:

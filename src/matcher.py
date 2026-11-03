@@ -53,16 +53,24 @@ def known_brands(items, brands=()) -> list:
 
 
 def split_brand(phrase, brands):
-    """Return (brand, the rest of the phrase) if the phrase starts with one of the brands, else (None, phrase).
+    """Return (brand, the rest of the phrase) if the phrase starts or ends with one of the brands, else (None, phrase).
 
     Only a known brand is taken off: an unknown first word is often what tells
-    two products apart ("hand masks").
+    two products apart ("hand masks"). At the end, a "from" or "by" before the
+    brand goes with it ("hand wash from aesop").
     """
     words = plain(phrase).split()
     for brand in sorted(brands, key=len, reverse=True):
         brand_words = plain(brand).split()
-        if brand_words and words[:len(brand_words)] == brand_words and len(words) > len(brand_words):
-            return brand, " ".join(words[len(brand_words):])
+        size = len(brand_words)
+        if not brand_words or len(words) <= size:
+            continue
+        if words[:size] == brand_words:
+            return brand, " ".join(words[size:])
+        if words[-size:] == brand_words:
+            rest = words[:-size]
+            rest = rest[:-1] if rest[-1] in ("from", "by") and len(rest) > 1 else rest
+            return brand, " ".join(rest)
     return None, phrase
 
 

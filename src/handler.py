@@ -145,6 +145,7 @@ def _handle_chat(update_id, text, sender, sent_at):
     rejected = 0     # lines that get the format hint
     bad_dates = 0    # lines that get the date hint
     bad_expiries = 0  # lines that get the expiry hint
+    no_prices = 0    # /bought lines with no price
     for line in filter(None, (line.strip() for line in text.splitlines())):
         kind, entry = _read_line(line, items, lookups)
         if kind == "entry":
@@ -155,12 +156,14 @@ def _handle_chat(update_id, text, sender, sent_at):
             bad_dates += 1
         elif kind == "bad expiry":
             bad_expiries += 1
+        elif kind == "no price":
+            no_prices += 1
         elif kind == "attempt":
             free_text.append(line)
             attempts += 1
         elif kind == "free text":
             free_text.append(line)
-    if not entries and not free_text and not rejected and not bad_dates and not bad_expiries:
+    if not entries and not free_text and not rejected and not bad_dates and not bad_expiries and not no_prices:
         return None, []  # ordinary chat
 
     counts = Counter()
@@ -182,20 +185,23 @@ def _handle_chat(update_id, text, sender, sent_at):
             at=apply.iso_utc(sent_at),
         )
         counts.update(applied)
-    counts["lines_rejected"] += rejected + bad_dates + bad_expiries
+    counts["lines_rejected"] += rejected + bad_dates + bad_expiries + no_prices
     logger.info("update %s: %s, %s", update_id, [entry["action"] for entry in entries], dict(counts))
     _count(sent_at, counts)
     if bad_dates:
         notes.append(replies.DATE_HINT)
     if bad_expiries and replies.EXPIRY_HINT not in lines:
         notes.append(replies.EXPIRY_HINT)
+    if no_prices:
+        notes.append(replies.NO_PRICE_HINT)
     if rejected:
         notes.append(replies.FORMAT_HINT)
     return "\n".join(lines + notes) or None, rows
 
 
 def _read_line(line, items, lookups):
-    """Sort one line: ("entry", the entry), or ("hint" / "bad date" / "bad expiry" / "attempt" / "free text" / None, None).
+    """Sort one line: ("entry", the entry), or ("hint" / "bad date" / "bad expiry" / "no price" / "attempt" /
+    "free text" / None, None).
 
     "attempt" is a line that starts with a keyword but can't be read as the format;
     like "free text", it goes to the AI fallback.
@@ -210,6 +216,8 @@ def _read_line(line, items, lookups):
             return "bad date", None
         if result == structured.BAD_EXPIRY:
             return "bad expiry", None
+        if result == structured.NO_PRICE:
+            return "no price", None
         # "+ 2 3" has no words for the AI to work with either.
         return ("attempt" if structured.has_words(line) else "hint"), None
     if any(character.isdigit() for character in line):

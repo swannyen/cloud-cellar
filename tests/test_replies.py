@@ -212,7 +212,7 @@ class FixedTextTest(unittest.TestCase):
         format_part = replies.HELP.split("Other ways to start a line:")[0]
         examples = [line.split(" — ")[0] for line in format_part.splitlines() if " — " in line]
         examples.append(replies.FORMAT_HINT.split("Try: ")[1].split(" — ")[0])
-        self.assertEqual(len(examples), 7)
+        self.assertEqual(len(examples), 8)
         for example in examples:
             with self.subTest(example=example):
                 self.assertIsInstance(structured.parse_line(example), dict)
@@ -243,8 +243,9 @@ class FixedTextTest(unittest.TestCase):
     def test_entry_command_usage_examples_really_parse(self):
         add, used, stocktake = replies.ENTRY_COMMAND_USAGE.removeprefix("Use it like this: ").split(" — or ")
         self.assertEqual(structured.parse_line(add)["action"], "bought")
-        self.assertEqual(structured.parse_line(used)["action"], "finished")
+        self.assertEqual(structured.parse_line(used)["action"], "used")
         self.assertEqual(structured.parse_line(stocktake)["action"], "stock_count")
+        self.assertEqual(structured.parse_line(replies.NO_PRICE_HINT.split("like ")[1].split(" —")[0])["action"], "bought")
 
     def test_toasts(self):
         self.assertEqual(replies.alias_toast("hand masks", MASKS), "Saved: 'hand masks' = Face masks")

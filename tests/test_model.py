@@ -293,17 +293,18 @@ class PackSizeTest(unittest.TestCase):
 class ExpiryOrderTest(unittest.TestCase):
     """What expires first is used first (PLAN.md §8.6)."""
 
-    def lux(self, qty, update_id, line, expires_on=None, size=400):
-        return counted(qty, update_id, line, "Lux", expires_on=expires_on, units_per_pack=size, packs=qty // size)
+    def lux(self, qty, update_id, line, expires_on=None, size=400, description=None):
+        return counted(qty, update_id, line, "Lux", expires_on=expires_on, units_per_pack=size, packs=qty // size,
+                       description=description)
 
     def test_lots_come_back_in_the_order_to_use_them(self):
-        events = [self.lux(1600, 8, 0, "2028-07-31"), self.lux(1600, 8, 1, "2028-06-30"), self.lux(400, 8, 2),
-                  self.lux(400, 8, 3, "2028-03-31")]
+        events = [self.lux(1600, 8, 0, "2028-07-01", description="white tea"), self.lux(1600, 8, 1, "2028-06-01", description="rose"),
+                  self.lux(400, 8, 2), self.lux(400, 8, 3, "2028-03-01", description="rose")]
         self.assertEqual(model.batches_left(events), [
-            {"brand": "Lux", "amount": 400, "expires_on": "2028-03-31", "size": 400},
-            {"brand": "Lux", "amount": 1600, "expires_on": "2028-06-30", "size": 400},
-            {"brand": "Lux", "amount": 1600, "expires_on": "2028-07-31", "size": 400},
-            {"brand": "Lux", "amount": 400, "expires_on": None, "size": 400},
+            {"brand": "Lux", "description": "rose", "amount": 400, "expires_on": "2028-03-01", "size": 400},
+            {"brand": "Lux", "description": "rose", "amount": 1600, "expires_on": "2028-06-01", "size": 400},
+            {"brand": "Lux", "description": "white tea", "amount": 1600, "expires_on": "2028-07-01", "size": 400},
+            {"brand": "Lux", "description": None, "amount": 400, "expires_on": None, "size": 400},
         ])
 
     def test_what_is_used_comes_off_what_expires_first(self):
@@ -317,6 +318,36 @@ class ExpiryOrderTest(unittest.TestCase):
     def test_the_size_of_a_pack_is_kept_or_worked_out(self):
         events = [ev("bought", 1100, packs=2, brand="na", sk="a#1#0"), ev("bought", 750, sk="a#2#0")]
         self.assertEqual([batch["size"] for batch in model.batches_left(events)], [550, None])
+
+
+
+class OneBrandTest(unittest.TestCase):
+    """Running out of, or down to the last of, one brand leaves the other brands alone (3 Nov 2026)."""
+
+    STOCK = [ev("stock_count", 5200, brand="Lux", sk="a#1#0"), ev("bought", 500, brand="Aesop", sk="b#2#0")]
+
+    def test_a_brand_that_ran_out_takes_only_its_own(self):
+        events = self.STOCK + [ev("finished", brand="aesop", sk="c#3#0")]
+        self.assertEqual(model.brands_left(events, 400), [("Lux", 5200)])
+        self.assertEqual(model.replay(events, 400)["status"], "ok")
+
+    def test_running_out_with_no_brand_is_everything(self):
+        state = model.replay(self.STOCK + [ev("finished", sk="c#3#0")], 400)
+        self.assertEqual((state["status"], state["stock_est"]), ("out", 0))
+
+    def test_the_last_brand_there_running_out_is_out(self):
+        state = model.replay([ev("bought", 500, brand="Aesop", sk="b#2#0"), ev("finished", brand="Aesop", sk="c#3#0")])
+        self.assertEqual((state["status"], state["stock_est"]), ("out", 0))
+
+    def test_a_brand_down_to_its_last_pack(self):
+        events = [ev("stock_count", 1600, brand="Lux", sk="a#1#0"), ev("bought", 1200, brand="Dettol", sk="b#2#0"),
+                  ev("opened_last", brand="Dettol", sk="c#3#0")]
+        self.assertEqual(model.brands_left(events, 400), [("Lux", 1600), ("Dettol", 400)])
+        self.assertEqual(model.replay(events, 400)["status"], "ok")
+
+    def test_a_brand_that_is_not_there_changes_nothing(self):
+        events = self.STOCK + [ev("finished", brand="Dettol", sk="c#3#0")]
+        self.assertEqual(model.replay(events, 400)["stock_est"], 5700)
 
 
 if __name__ == "__main__":

@@ -80,7 +80,8 @@ class KeywordTest(unittest.TestCase):
     def test_entry_commands_read_like_their_symbols(self):
         self.assertEqual(read("/add toilet paper 2x10 $12.90 @fairprice"), read("+ toilet paper 2x10 $12.90 @fairprice"))
         self.assertEqual(read("/bought toilet paper 2x10 $12.90 @fairprice"), read("+ toilet paper 2x10 $12.90 @fairprice"))
-        self.assertEqual(read("/used dish soap"), read("- dish soap"))
+        self.assertEqual(read("/used dish soap 2"), read("- dish soap 2"))
+        self.assertEqual(read("/used dish soap"), entry("used", "dish soap"))   # one pack, not the end of it
         self.assertEqual(read("/stocktake rice 2x5kg"), read("have rice 2x5kg"))
         self.assertEqual(read("/Stocktake@bettynuffbot pocket tissues 90 packets"),
                          entry("stock_count", "pocket tissues", packs(90)))
@@ -209,7 +210,7 @@ class QuantityTest(unittest.TestCase):
         self.assertEqual(read("have rice"), entry("stock_count", "rice"))
 
     def test_minus_without_a_quantity_means_it_has_run_out(self):
-        for line in ("- dish soap", "/used dish soap", "done dish soap", "finished dish soap", "out dish soap"):
+        for line in ("- dish soap", "done dish soap", "finished dish soap", "out dish soap"):
             with self.subTest(line=line):
                 self.assertEqual(read(line), entry("finished", "dish soap"))
         self.assertEqual(read("- 7up"), entry("finished", "7up"))
@@ -727,6 +728,30 @@ class ExpiryTest(unittest.TestCase):
         self.assertIsNone(structured.read_expiry("soon"))
         self.assertEqual(structured.strip_expiries("1 bottle that expires on 31/12/2026\nexp 12/27 too"),
                          "1 bottle that\ntoo")
+
+
+
+class DescriptionTest(unittest.TestCase):
+    def test_a_description_in_brackets(self):
+        line = structured.parse_line("have body wash 1x400ml (pink) exp 09/2028")
+        self.assertEqual((line["phrase"], line["description"], line["quantity"]),
+                         ("body wash", "pink", packs_of(1, 400, "ml")))
+        self.assertEqual(structured.parse_line("+ body wash ( green  tea ) 475ml")["description"], "green tea")
+
+    def test_a_bracket_with_a_number_is_not_one(self):
+        self.assertEqual(structured._split_description("toilet paper 2x10 (U.P. 6.40)"), ("toilet paper 2x10 (U.P. 6.40)", None))
+        self.assertNotIn("description", structured.parse_line("+ body wash 475ml"))
+
+
+
+class BoughtWithPriceTest(unittest.TestCase):
+    def test_the_bought_command_needs_a_price_and_add_does_not(self):
+        for line in ("/bought hand wash 3x400g", "/bought@bettynuffbot hand wash 3x400g exp 07/2029"):
+            with self.subTest(line=line):
+                self.assertEqual(structured.parse_line(line), structured.NO_PRICE)
+        self.assertEqual(structured.parse_line("/bought hand wash 3x400g $9 exp 07/2029")["action"], "bought")
+        self.assertIsNone(structured.parse_line("/add hand wash 3x400g exp 07/2029")["total_price"])
+        self.assertEqual(structured.parse_line("+ hand wash 3x400g")["action"], "bought")
 
 
 if __name__ == "__main__":

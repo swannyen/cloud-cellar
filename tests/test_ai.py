@@ -139,7 +139,8 @@ class GroundingTest(unittest.TestCase):
             "action": "bought", "item_id": None, "phrase": "Facial masks", "base_unit": "piece",
             "quantity": {"kind": "amount", "amount": 5, "unit": "piece"}, "total_price": 1.86,
             "store": "Taobao", "store_is_new": False, "brand": None, "adds": False, "missed": (),
-            "on": None, "expiry": None, "raw": "Facial masks 5 pcs 1.86 from Taobao", "free_text": True,
+            "on": None, "expiry": None, "description": None, "raw": "Facial masks 5 pcs 1.86 from Taobao",
+            "free_text": True,
         })
 
     def test_store_read_by_code_beats_the_models_answer(self):
@@ -395,6 +396,59 @@ class ExpiryGroundingTest(unittest.TestCase):
     def test_only_purchases_and_counts_have_one(self):
         entry = ground("used 2 masks, exp 12/27", action="used", quantity_text="2 masks")
         self.assertIsNone(entry["expiry"])
+
+
+
+class DescriptionGroundingTest(unittest.TestCase):
+    """What tells one pack from another ("pink") is kept only if it is written on the entry's own line."""
+
+    TEXT = ("Stock take for body wash\n1 bottle 半亩花田 pink 400 ml body wash expire Sep 2028\n"
+            "1 bottle green tea fragrance body wash 475 ml expire Nov 2028")
+
+    def found(self, *events):
+        return [entry["description"] for entry in ai.ground_free_text(list(events), self.TEXT)]
+
+    def test_each_line_keeps_its_own(self):
+        self.assertEqual(self.found(
+            event(action="stock_count", quantity_text="1 bottle 半亩花田 pink 400 ml", brand="半亩花田", description="pink"),
+            event(action="stock_count", quantity_text="1 bottle green tea fragrance body wash 475 ml",
+                  description="green tea fragrance")), ["pink", "green tea fragrance"])
+
+    def test_one_from_another_line_or_not_written_is_dropped(self):
+        self.assertEqual(self.found(
+            event(action="stock_count", quantity_text="1 bottle 半亩花田 pink 400 ml", brand="半亩花田", description="green tea"),
+            event(action="stock_count", quantity_text="1 bottle green tea fragrance body wash 475 ml", description="lavender"),
+        ), [None, None])
+
+    def test_the_brand_on_its_own_is_not_a_description(self):
+        self.assertEqual(self.found(event(action="stock_count", quantity_text="1 bottle 半亩花田 pink 400 ml",
+                                          brand="半亩花田", description="半亩花田")), [None])
+
+    def test_only_purchases_and_counts_have_one(self):
+        self.assertEqual(self.found(event(action="used", quantity_text="1 bottle 半亩花田 pink 400 ml", description="pink")),
+                         [None])
+
+
+
+class EventLineTest(unittest.TestCase):
+    """Which line of a stocktake an event came from, when several lines look alike."""
+
+    TEXT = ("Stock take for body wash\n2 bottles 半亩花田 400 ml each body wash expire Mar 2029\n"
+            "2 bottles 半亩花田 400 ml body wash expire Jul 2029\n2 bottles 半亩花田 400 ml body wash expire Sep 2029")
+
+    def test_a_word_copied_from_a_neighbouring_line_does_not_decide(self):
+        # On 3 Nov 2026 the model copied "each" from the first line for the last one.
+        found = event(action="stock_count", quantity_text="2 bottles 400 ml each", expiry_text="expire Sep 2029", brand="半亩花田")
+        self.assertEqual(ai._event_line(found, self.TEXT), "2 bottles 半亩花田 400 ml body wash expire Sep 2029")
+        entry, = ai.ground_free_text([found], self.TEXT)
+        self.assertEqual(entry["expiry"]["written"], "Sep 2029")
+
+    def test_lines_that_tie_could_be_either(self):
+        found = event(action="stock_count", quantity_text="2 bottles 400 ml", brand="半亩花田")
+        self.assertIsNone(ai._event_line(found, self.TEXT))
+
+    def test_a_one_line_message_is_its_own_line(self):
+        self.assertEqual(ai._event_line(event(quantity_text="nothing like it"), "got masks"), "got masks")
 
 
 if __name__ == "__main__":

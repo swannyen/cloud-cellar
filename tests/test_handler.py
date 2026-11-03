@@ -364,9 +364,12 @@ class EntryCommandTest(HandlerTestCase):
         self.assertEqual(self.replies()[1], "✓ Toilet paper: used 1 pack of 10 rolls, 20 rolls (2 packs) left.")
         self.assertEqual(store.get_item("toilet-paper")["stock_est"], 20)
 
-    def test_used_marks_finished_like_the_minus_sign(self):
-        self.call(message_update(text="/used dish soap"))
-        self.assertEqual(self.replies(), ["✓ Dishwashing liquid: marked finished."])
+    def test_used_without_an_amount_is_one_pack_and_minus_means_it_ran_out(self):
+        self.call(message_update(update_id=1, text="/add dish soap 2x500ml"))
+        self.call(message_update(update_id=2, text="/used dish soap"))
+        self.assertEqual(self.replies()[1], "✓ Dishwashing liquid: used 1 pack of 500 ml, 500 ml (1 pack) left.")
+        self.call(message_update(update_id=3, text="- dish soap"))
+        self.assertEqual(self.replies()[2], "✓ Dishwashing liquid: marked finished.")
         self.assertEqual(store.get_item("dish-soap")["status"], "out")
 
     def test_stocktake_sets_the_count_like_have(self):
@@ -396,7 +399,7 @@ class EntryCommandTest(HandlerTestCase):
         self.assertEqual(self.replies(), [replies.FORMAT_HINT])
 
     def test_more_lines_can_follow_in_the_same_message(self):
-        self.call(message_update(text="/add toilet paper 1x10\n/used dish soap\n+ toilet paper 1x10"))
+        self.call(message_update(text="/add toilet paper 1x10\n- dish soap\n+ toilet paper 1x10"))
         self.assertEqual(self.replies(), ["✓ Toilet paper: bought 1 pack of 10 rolls.\n✓ Dishwashing liquid: marked finished.\n"
                                           "✓ Toilet paper: bought 1 pack of 10 rolls."])
 
@@ -731,6 +734,19 @@ class ExpiryRouteTest(HandlerTestCase):
         said = self.replies()[0]
         self.assertEqual(said.splitlines(), ["✓ Toilet paper: bought 2 packs × 10 rolls (20 rolls), expires 1 Dec 2027.",
                                              replies.EXPIRY_HINT])
+        self.assertEqual(self.stats(), {"lines_structured": 1, "lines_rejected": 1})
+
+
+
+class NoPriceRouteTest(HandlerTestCase):
+    def setUp(self):
+        super().setUp()
+        self.add_item("toilet-paper", "Toilet paper", "roll", pack_size=10)
+
+    def test_bought_without_a_price_gets_the_hint_and_the_other_lines_are_kept(self):
+        self.call(message_update(text="/bought toilet paper 2x10\n+ toilet paper 1x10"))
+        self.assertEqual(self.replies()[0].splitlines(),
+                         ["✓ Toilet paper: bought 1 pack of 10 rolls.", replies.NO_PRICE_HINT])
         self.assertEqual(self.stats(), {"lines_structured": 1, "lines_rejected": 1})
 
 

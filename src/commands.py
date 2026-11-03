@@ -76,7 +76,7 @@ def _use(args, now) -> str:
     events = store.list_events(item["item_id"])
     apply.recompute(item, events)
     today = datetime.fromtimestamp(now, apply.SGT).date()
-    return replies.use_next(item, model.batches_left(events, item.get("pack_size")), today)
+    return replies.use_next(item, model.batches_left(events, item.get("pack_size"), item["base_unit"]), today)
 
 
 def _undo(sender, now) -> str:

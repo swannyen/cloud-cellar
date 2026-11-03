@@ -8,8 +8,10 @@ import config
 
 API_URL = "https://api.anthropic.com/v1/messages"
 API_VERSION = "2023-06-01"
-TIMEOUT_SECONDS = 20          # for the whole call, including the one retry
-MAX_TOKENS = 2048             # the default: room for a long shopping-trip message
+TIMEOUT_SECONDS = 45          # for the whole call, including the one retry; the Lambda has 60
+# The default, for the free-text fallback: about 120 tokens a line, so room for a stocktake as long as
+# Telegram allows a message to be (a 19-line one took 2,245 tokens and 8 s on 3 Nov 2026).
+MAX_TOKENS = 8192
 RETRY_STATUSES = (429, 500, 529)  # rate limited, server error, overloaded
 RETRY_PAUSE_SECONDS = 1
 

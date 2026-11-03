@@ -24,10 +24,13 @@ WORDS = {
     "have": "stock_count",
     "price": "price_check",
 }
+# "/bought" is a purchase used on purpose, so it needs its price: "/add" is the one for adding without one.
+BOUGHT_WITH_PRICE = "bought_with_price"
 
 # The same entries written as bot commands: "/add rice 5kg" is "+ rice 5kg", "/used rice" is
 # "- rice", and "/stocktake rice 2" is "have rice 2".
-COMMANDS = {"/add": "bought", "/bought": "bought", "/used": "finished", "/stocktake": "stock_count"}
+# "/used" is always "used": with no amount, one pack (the user, 3 Nov 2026). Running out is "-", "finished" or "out".
+COMMANDS = {"/add": "bought", "/bought": BOUGHT_WITH_PRICE, "/used": "used", "/stocktake": "stock_count"}
 
 # This action takes no quantity or price: everything after the keyword is the item.
 NO_QUANTITY = ("opened_last",)
@@ -76,6 +79,8 @@ UNCLEAR_COUNT = "unclear_count"
 # with something date-like that isn't in the format.
 BAD_DATE = "bad_date"
 FUTURE_DATE = "future_date"
+# What parse_line returns for a /bought line with no price.
+NO_PRICE = "no_price"
 # What parse_line returns for an expiry word with no date it can read after it, and
 # what resolve_expiry returns for a date that doesn't exist.
 BAD_EXPIRY = "bad_expiry"
@@ -107,6 +112,9 @@ _EXPIRY_WORD = re.compile(
     re.IGNORECASE,
 )
 _END = r"(?![\w/-])"
+# A description in brackets, on a line in the format: "have body wash 1x400ml (pink) exp 09/2028".
+# A bracket with a number in it is more likely a price ("(U.P. $6.40)"), so it isn't one.
+_DESCRIPTION = re.compile(r"\(([^()\d]{1,40})\)")
 _EXPIRY_FORMS = [
     ("ymd", re.compile(rf"(\d{{4}})-(\d{{1,2}})-(\d{{1,2}}){_END}")),                      # 2026-12-31
     ("dmy", re.compile(rf"(\d{{1,2}})/(\d{{1,2}})/(\d{{4}}|\d{{2}}){_END}")),              # 31/12/2026, 31/12/26
@@ -141,7 +149,7 @@ def parse_line(line, stores=(), units=None):
     total_price, store, store_is_new, on, expiry, raw, explicit), UNREADABLE for a line
     that starts with a keyword but can't be read, BAD_DATE for one with a date
     that isn't in the format, BAD_EXPIRY for an expiry word with no date it can
-    read, or None for a line that doesn't start with a keyword. A None in an entry means "not given".
+    read, NO_PRICE for a /bought line without its price, or None for a line that doesn't start with a keyword. A None in an entry means "not given".
     """
     raw = " ".join(line.split())
     action, rest = _keyword(raw)
@@ -152,6 +160,7 @@ def parse_line(line, stores=(), units=None):
     rest, expiry = split_expiry(rest)
     if expiry == BAD_EXPIRY:
         return BAD_EXPIRY
+    rest, description = _split_description(rest)
     rest, on = split_date(rest)
     if on == BAD_DATE:
         return BAD_DATE
@@ -170,6 +179,9 @@ def parse_line(line, stores=(), units=None):
     quantity = quantities[0] if quantities else None
     if not _READABLE.search(phrase):
         return UNREADABLE
+    if action == "used":
+        # "/used hand wash" is one bottle used, not the end of it: apply.py works out which bottle.
+        return _entry("used", phrase, raw, quantity, explicit=explicit, on=on, expiry=expiry)
     if action == "finished":
         # "- rice" has run out. "- rice 2" is two packs used, with the rest still there.
         if quantity is None:
@@ -178,7 +190,14 @@ def parse_line(line, stores=(), units=None):
     # A price check needs both, or there is no unit price to compare.
     if action == "price_check" and (price is None or quantity is None):
         return UNREADABLE
-    return _entry(action, phrase, raw, quantity, price, store, store_is_new, explicit, on, expiry)
+    if action == BOUGHT_WITH_PRICE:
+        if price is None:
+            return NO_PRICE
+        action = "bought"
+    entry = _entry(action, phrase, raw, quantity, price, store, store_is_new, explicit, on, expiry)
+    if description:
+        entry["description"] = description
+    return entry
 
 
 def parse_bought(line, stores=(), units=None):
@@ -375,6 +394,14 @@ def _expiry_values(kind, found):
     if kind == "in":
         return int(found[1]), found[2][0].lower()
     return tuple(int(group) for group in found.groups())
+
+
+def _split_description(text):
+    """Take a description in brackets off a line: (the rest, the description or None)."""
+    found = _DESCRIPTION.search(text)
+    if not found or not found[1].strip():
+        return text, None
+    return " ".join((text[:found.start()] + " " + text[found.end():]).split()), " ".join(found[1].split())
 
 
 def _month_number(name) -> int:

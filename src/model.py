@@ -30,14 +30,16 @@ def replay(events, pack_size=None) -> dict:
         elif action == "stock_count":
             if counted:
                 status = _level(stock.total(), pack_size)
-        elif action == "opened_last":
-            status = "low"
         elif action == "used":
             # Only what is known to be there can be counted down.
             if counted:
                 status = "out" if stock.total() == 0 else _level(stock.total(), pack_size)
-        elif action == "finished":
-            status = "out"
+        elif action in ("opened_last", "finished"):
+            # "- aesop hand wash" is about Aesop: with other brands still there, the item isn't out or low.
+            if stock.others_left(event):
+                status = _level(stock.total(), pack_size)
+            else:
+                status = "low" if action == "opened_last" else "out"
         # still_have and price_check don't change stock (still_have snoozes nudges in Phase 3).
         last_event_at = event.get("at", last_event_at)
     return {"status": status, "stock_est": stock.total(), "last_event_at": last_event_at}
@@ -61,20 +63,23 @@ def brands_left(events, pack_size=None) -> list:
     return [(stock.spellings[brand], amount) for brand, amount in left.items()] + ([(None, unbranded)] if unbranded else [])
 
 
-def batches_left(events, pack_size=None) -> list:
+def batches_left(events, pack_size=None, base_unit=None) -> list:
     """What should still be at home, lot by lot, in the order to use it: what expires first, then the oldest.
 
     A lot is what one purchase or one line of a count brought in. Each comes
-    back as {"brand", "amount", "expires_on", "size"}: the brand as first
-    written or None, the amount in base units, the expiry as an ISO date or
-    None, and the base units in one pack when that is known. Lots with no
-    expiry come last. The amounts add up to replay's stock_est.
+    back as {"brand", "description", "amount", "expires_on", "size"}: the brand
+    as first written or None, the description written on that line ("pink") or
+    None, the amount in base units, the expiry as an ISO date or None, and the
+    base units in one pack when that is known (base_unit, the item's, says
+    whether a purchase written as "500ml" is one bottle). Lots with no expiry
+    come last. The amounts add up to replay's stock_est.
     """
-    stock = _Stock(pack_size)
+    stock = _Stock(pack_size, base_unit)
     for event in events:
         stock.apply(event)
     return [
-        {"brand": stock.spellings.get(lot.brand), "amount": lot.amount, "expires_on": lot.expires_on, "size": lot.size}
+        {"brand": stock.spellings.get(lot.brand), "description": lot.description, "amount": lot.amount,
+         "expires_on": lot.expires_on, "size": lot.size}
         for lot in _use_order(stock.lots)
     ]
 
@@ -86,6 +91,7 @@ class _Lot:
     amount: float                  # base units still there
     expires_on: str | None = None  # ISO date
     size: float | None = None      # base units in one pack
+    description: str | None = None  # "pink", "green tea fragrance": what tells it from the item's other lots
 
 
 class _Stock:
@@ -102,8 +108,9 @@ class _Stock:
     up. A count marked "adds" ("I have another 3 bottles") adds to whatever is there.
     """
 
-    def __init__(self, pack_size):
+    def __init__(self, pack_size, base_unit=None):
         self.pack_size = pack_size
+        self.base_unit = base_unit
         self.lots = []
         self.known = False      # no figure until something is bought, counted or runs out
         self.spellings = {}     # brand without capitals or punctuation -> the brand as first written
@@ -128,6 +135,12 @@ class _Stock:
                 return False
             self._count(event, qty, brand)
         elif action == "opened_last":
+            if brand and self.others_left(event):
+                # Down to the last pack of that brand: what is there of the others stays.
+                mine = sum(lot.amount for lot in self.lots if lot.brand == brand)
+                if self.pack_size and mine > self.pack_size:
+                    _take(self.lots, _rounded(mine - self.pack_size), brand)
+                return True
             if not self.pack_size:
                 return False
             _set_total(self.lots, _Lot(brand, self.pack_size, size=self.pack_size))
@@ -137,11 +150,17 @@ class _Stock:
             _take(self.lots, qty, brand)
             return True
         elif action == "finished":
-            self.lots.clear()
+            # A brand that ran out takes only its own packs with it ("- aesop hand wash"); no brand, everything.
+            self.lots = [lot for lot in self.lots if brand and lot.brand != brand]
         else:
             return False
         self.known = True
         return True
+
+    def others_left(self, event) -> bool:
+        """Whether an entry names a brand and there is stock of other brands too."""
+        brand = matcher.plain(event.get("brand") or "") or None
+        return bool(brand) and any(lot.brand != brand for lot in self.lots)
 
     def _count(self, event, qty, brand):
         if event.get("adds"):
@@ -169,7 +188,9 @@ class _Stock:
 
     def _lot(self, brand, qty, event):
         size = event.get("units_per_pack") or (qty / event["packs"] if event.get("packs") else None)
-        return _Lot(brand, qty, event.get("expires_on"), _rounded(size) if size else None)
+        if not size and event["action"] == "bought" and self.base_unit in ("g", "ml"):
+            size = qty   # "+ hand wash 500ml" is a bottle of 500 ml; a count of "1.6 kg" says nothing about bottles
+        return _Lot(brand, qty, event.get("expires_on"), _rounded(size) if size else None, event.get("description"))
 
 
 def _level(stock, pack_size) -> str:
@@ -228,6 +249,37 @@ def event_qty(event, pack_size=None):
     if packs and size:
         return packs * size
     return None
+
+
+def packs_amount(events, pack_size, packs, brand=None, base_unit=None):
+    """What the next packs to be used come to, each at its own size: (amount, their size if they are all one), or None.
+
+    "/used hand wash" is one bottle, and it is the bottle to use next (the
+    named brand's, then the one that expires first): an Aesop 500 g bottle is
+    500 g, whatever the item's usual pack size. Packs beyond what is known to be
+    there are the usual pack size. None if a size can't be known. base_unit is
+    as for batches_left.
+    """
+    stock = _Stock(pack_size, base_unit)
+    for event in events:
+        stock.apply(event)
+    total, left, sizes = 0, packs, set()
+    for lot in _use_order(stock.lots, matcher.plain(brand or "") or None):
+        size = lot.size or pack_size
+        if left <= 0:
+            break
+        if not size:
+            return None
+        here = min(left, lot.amount / size)
+        total, left = total + here * size, _rounded(left - here)
+        sizes.add(size)
+    if left > 0:
+        size = pack_size or (next(iter(sizes)) if len(sizes) == 1 else None)
+        if not size:
+            return None
+        total += left * size
+        sizes.add(size)
+    return _rounded(total), (sizes.pop() if len(sizes) == 1 else None)
 
 
 def latest_pack_size(events):

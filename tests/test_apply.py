@@ -11,9 +11,11 @@ from fakes import FakeTable, entries, no_ai
 import ai
 import apply
 import claude_api
+import model
 import pricing
 import replies
 import store
+import structured
 
 MEI = {"id": 42, "name": "Mei"}
 AT = "2026-10-09T10:00:00Z"
@@ -234,10 +236,15 @@ class UsedTest(ApplyTestCase):
         self.assertEqual(self.lines("- pocket tissues 6pcs", update_id=2),
                          ["✓ Pocket tissues: used 6 pieces, 1074 pieces (179 packs) left."])
 
-    def test_without_a_quantity_it_has_run_out(self):
+    def test_minus_without_a_quantity_has_run_out(self):
         self.add_pocket_tissues()
-        self.assertEqual(self.lines("/used pocket tissues", update_id=2), ["✓ Pocket tissues: marked finished."])
+        self.assertEqual(self.lines("- pocket tissues", update_id=2), ["✓ Pocket tissues: marked finished."])
         self.assertEqual(store.get_item("pocket-tissues")["stock_est"], 0)
+
+    def test_used_without_a_quantity_is_one_pack(self):
+        self.add_pocket_tissues()
+        self.assertEqual(self.lines("/used pocket tissues", update_id=2),
+                         ["✓ Pocket tissues: used 1 pack of 6 pieces, 1074 pieces (179 packs) left."])
 
     def test_using_everything_marks_it_out(self):
         self.add_pocket_tissues()
@@ -464,7 +471,7 @@ class ItemResolutionTest(ApplyTestCase):
 
     def test_entry_commands_always_get_an_answer_too(self):
         self.ai_says(None, "")
-        for update_id, text in enumerate(["/add mama lemon 2x500ml", "/bought mama lemon", "/used mama lemon"]):
+        for update_id, text in enumerate(["/add mama lemon 2x500ml", "/bought mama lemon $3", "/used mama lemon"]):
             with self.subTest(text=text):
                 line, = self.lines(text, update_id=update_id)
                 self.assertIn('I don\'t know what "mama lemon" is', line)
@@ -982,7 +989,7 @@ class StocktakeTest(ApplyTestCase):
                   self.count("hand-wash", "4 bottles of Lux hand wash, 400g each", "Lux"), update_id=5)
         lines, _, _ = self.said("I have another 3 bottles of Lux hand wash, 400g each",
                                 self.count("hand-wash", "3 bottles of Lux hand wash, 400g each", "Lux", adds=True), update_id=6)
-        self.assertEqual(lines, ["✓ Hand wash: counted 3 packs × 400 g (1.2 kg) more in stock, 2.8 kg in all."])
+        self.assertEqual(lines, ["✓ Hand wash: added 3 packs × 400 g (1.2 kg) to the stock, 2.8 kg in all."])
         self.assertTrue(self.events("hand-wash")[-1]["adds"])
         self.assertNotIn("adds", self.events("hand-wash")[0])
 
@@ -1054,6 +1061,97 @@ class ExpiryApplyTest(ApplyTestCase):
                                      quantity_text="2 packs", expiry_text="expires 31/02/2027"))
         self.assertEqual(lines, ["✓ Toilet paper: counted 2 packs × 10 rolls (20 rolls) in stock. (Didn't catch the expiry.)"])
         self.assertNotIn("expires_on", self.events("toilet-paper")[0])
+
+
+
+class DescriptionApplyTest(ApplyTestCase):
+    def setUp(self):
+        super().setUp()
+        self.add_item("body-wash", "Body wash", "ml", brands=["半亩花田"])
+
+    def test_a_description_is_stored_and_the_reply_shows_it(self):
+        lines = self.lines("have 半亩花田 body wash 1x400ml (pink) exp 09/2028",
+                           brands=["半亩花田"])
+        self.assertEqual(lines, ["✓ Body wash: counted 1 pack of 400 ml in stock: 半亩花田 pink, expires 1 Sep 2028."])
+        event, = self.events("body-wash")
+        self.assertEqual((event["brand"], event["description"]), ("半亩花田", "pink"))
+
+    def test_from_free_text(self):
+        self.said("1 bottle green tea fragrance body wash 475 ml expire Nov 2028",
+                  dict(action="stock_count", item_id="body-wash", item_name="body wash", base_unit="ml",
+                       quantity_text="1 bottle green tea fragrance body wash 475 ml", description="green tea fragrance"))
+        self.assertEqual(self.events("body-wash")[0]["description"], "green tea fragrance")
+
+    def test_only_on_what_is_at_home(self):
+        self.send("have body wash 2x400ml")
+        self.send("- body wash 1 (pink)", update_id=2)
+        self.assertNotIn("description", self.events("body-wash")[1])
+
+
+
+class FoundApplyTest(ApplyTestCase):
+    """Something found at home is added with /add, on any day, without counting everything again."""
+
+    def test_add_with_no_price_adds_to_yesterdays_stocktake(self):
+        self.add_item("hand-wash", "Hand wash", "g", brands=["Lux"])
+        self.send("have lux hand wash 4x400g exp 07/2028\nhave lux hand wash 1x400g exp 03/2028", brands=["Lux"])
+        lines = self.lines("/add lux hand wash 3x400g (white tea) exp 07/2029", update_id=2, at="2026-10-10T10:00:00Z",
+                           brands=["Lux"])
+        self.assertEqual(lines, ["✓ Hand wash: bought 3 packs × 400 g (1.2 kg): Lux white tea, expires 1 Jul 2029."])
+        # A plain count on a later day would have replaced it all.
+        self.assertEqual(store.get_item("hand-wash")["stock_est"], 3200)
+        self.assertNotIn("unit_price", self.events("hand-wash")[-1])
+
+    def test_bought_needs_its_price(self):
+        self.add_toilet_paper(pack_size=10, pack_size_set_at=AT)
+        self.assertEqual(structured.parse_line("/bought toilet paper 2x10"), structured.NO_PRICE)
+        self.assertEqual(self.lines("/bought toilet paper 2x10 $5"),
+                         ["✓ Toilet paper: bought 2 packs × 10 rolls (20 rolls) for $5.00 ($0.25/roll). First price recorded."])
+        # The words, unlike the command, are as often chat as a log, so they keep working without one.
+        self.assertEqual(structured.parse_line("bought toilet paper 2x10")["action"], "bought")
+
+
+
+class OneBrandApplyTest(ApplyTestCase):
+    def test_the_reply_says_which_brand_and_what_is_left(self):
+        self.add_item("hand-wash", "Hand wash", "g", brands=["Lux", "Aesop"], pack_size=400, pack_size_set_at=AT)
+        self.send("have lux hand wash 4x400g\n+ aesop hand wash 500g", brands=["Lux", "Aesop"])
+        self.assertEqual(self.lines("- aesop hand wash", update_id=2, brands=["Lux", "Aesop"]),
+                         ["✓ Hand wash: Aesop marked finished, 1.6 kg left."])
+        self.assertEqual(store.get_item("hand-wash")["status"], "ok")
+
+
+
+class UsedOnePackTest(ApplyTestCase):
+    """"/used hand wash" is the next bottle to be used, at its own size (3 Nov 2026)."""
+
+    def setUp(self):
+        super().setUp()
+        self.add_item("hand-wash", "Hand wash", "g", brands=["Lux", "Aesop"])
+        # Written the way it was on 3 Nov 2026: a bottle given only by its size.
+        self.send("have lux hand wash 4x400g exp 07/2028\n+ aesop hand wash 500g", brands=["Lux", "Aesop"])
+
+    def test_the_brand_named_is_its_own_bottle(self):
+        self.assertEqual(self.lines("/used aesop hand wash", update_id=2, brands=["Lux", "Aesop"]),
+                         ["✓ Hand wash: used 1 pack of 500 g: Aesop, 1.6 kg (4 packs) left."])
+        self.assertEqual(model.brands_left(self.events("hand-wash"), 400), [("Lux", 1600)])
+
+    def test_with_no_brand_it_is_the_one_to_use_next(self):
+        self.lines("/used hand wash", update_id=2, brands=["Lux", "Aesop"])
+        # The Lux bottles expire first, so one of them went.
+        self.assertEqual(model.brands_left(self.events("hand-wash"), 400), [("Lux", 1200), ("Aesop", 500)])
+
+    def test_packs_of_different_sizes_are_given_as_a_total(self):
+        self.send("- hand wash 1", update_id=2, brands=["Lux", "Aesop"])
+        self.send("- hand wash 1", update_id=3, brands=["Lux", "Aesop"])
+        self.send("- hand wash 1", update_id=4, brands=["Lux", "Aesop"])
+        line, = self.lines("/used hand wash 2", update_id=5, brands=["Lux", "Aesop"])
+        self.assertEqual(line, "✓ Hand wash: used 900 g, none left.")
+
+    def test_with_nothing_known_it_asks_for_the_size(self):
+        self.add_item("dish-soap", "Dish soap", "ml")
+        line, = self.lines("/used dish soap", update_id=2)
+        self.assertTrue(line.startswith("How much is in each pack of Dish soap?"), line)
 
 
 if __name__ == "__main__":

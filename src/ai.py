@@ -17,6 +17,7 @@ import structured
 ACTIONS = ("bought", "used", "stock_count", "opened_last", "finished", "still_have", "price_check")
 BASE_UNITS = ("piece", "roll", "sheet", "g", "ml")
 MAX_NAME_LENGTH = 60
+MAX_DESCRIPTION_LENGTH = 40
 ITEM_MATCH_MAX_TOKENS = 100
 
 _NULLABLE_NUMBER = {"type": ["number", "null"]}
@@ -107,7 +108,7 @@ TOTAL_REACH = 4  # how many words may lie between the price and the word
 PRICED_ACTIONS = ("bought", "price_check")  # the entries a price can belong to
 
 # Bump when FREE_TEXT_PROMPT changes, so logged results can be tied to a prompt.
-FREE_TEXT_PROMPT_VERSION = 10
+FREE_TEXT_PROMPT_VERSION = 11
 
 # Every field is required (structured outputs limit optional fields); unknowns are null.
 FREE_TEXT_SCHEMA = {
@@ -128,10 +129,11 @@ FREE_TEXT_SCHEMA = {
                     "brand": _NULLABLE_STRING,
                     "adds_to_count": {"type": "boolean"},
                     "expiry_text": _NULLABLE_STRING,
+                    "description": _NULLABLE_STRING,
                 },
                 "required": [
                     "action", "item_id", "item_name", "base_unit", "quantity_text",
-                    "total_price_sgd", "store", "brand", "adds_to_count", "expiry_text",
+                    "total_price_sgd", "store", "brand", "adds_to_count", "expiry_text", "description",
                 ],
                 "additionalProperties": False,
             },
@@ -172,8 +174,9 @@ Return one event per item per thing that happened. One message can produce sever
 - quantity_text: the quantity words copied exactly as written, as one continuous piece of the message: "5kg", "35 sticks", "3 x 2L", "pack of 10 rolls", "6 cans". When the number of packs and the size of a pack are written apart, copy the whole stretch from the first to the last, with the words in between ("2 packs toilet paper 10 rolls each"). Don't convert units, multiply or decide what a number counts. If the message gives no quantity for this item, null. For finished, opened_last and still_have, null; "used" always has one.
 - total_price_sgd: the total price written in the message for this event, as a number: "$12.90" -> 12.9, "2 for $9.90" -> 9.9. When a promotional price was paid, use it, not the usual price. Only a total that is written counts. If the message gives just a price per pack ("$3.20 each" for two), or one total covering several different items, null.
 - store: the shop copied as it is written in the message ("ntuc", "Sheng Siong", "taobao"), otherwise null. Never replace it with another shop or another name for it. A shop named once for a whole shopping trip applies to every item in the message. A shop is never a brand.
-- adds_to_count: true only for a stock_count that adds to an earlier count ("another 3 bottles", "2 more"); otherwise false.
+- adds_to_count: true only for a stock_count that adds to what is there ("another 3 bottles", "2 more", "found 3 bottles"); otherwise false.
 - expiry_text: for bought and stock_count, the expiry date copied exactly as written, with the word before it ("expires Jan 2028", "exp 12/27", "best before 31/12/2026"), otherwise null. In a stocktake, each line's own expiry. Never work a date out or change how it is written.
+- description: for bought and stock_count, the words that tell this pack apart from others of the same product and brand, copied as written: a colour, scent, flavour or kind ("pink", "green tea fragrance", "white tea", "refill pack"), otherwise null. Never the brand, the product's own name, the size, the count, the expiry or the shop.
 
 ## clarify
 
@@ -189,18 +192,18 @@ Known items (id | name | base unit | aliases):
 toilet-paper | Toilet paper | roll | loo roll, TP
 dish-soap | Dishwashing liquid | ml | dish soap
 Message: Got 2 packs of TP from NTUC, 10 rolls each, $12.90. Also grabbed a 1L Mama Lemon for $3.20
-Output: {"events":[{"action":"bought","item_id":"toilet-paper","item_name":"TP","base_unit":"roll","quantity_text":"2 packs of TP from NTUC, 10 rolls each","total_price_sgd":12.9,"store":"NTUC","brand":null,"adds_to_count":false,"expiry_text":null},{"action":"bought","item_id":"dish-soap","item_name":"Dishwashing liquid","base_unit":"ml","quantity_text":"1L","total_price_sgd":3.2,"store":"NTUC","brand":"Mama Lemon","adds_to_count":false,"expiry_text":null}],"clarify":null}
+Output: {"events":[{"action":"bought","item_id":"toilet-paper","item_name":"TP","base_unit":"roll","quantity_text":"2 packs of TP from NTUC, 10 rolls each","total_price_sgd":12.9,"store":"NTUC","brand":null,"adds_to_count":false,"expiry_text":null,"description":null},{"action":"bought","item_id":"dish-soap","item_name":"Dishwashing liquid","base_unit":"ml","quantity_text":"1L","total_price_sgd":3.2,"store":"NTUC","brand":"Mama Lemon","adds_to_count":false,"expiry_text":null,"description":null}],"clarify":null}
 
 Known items (id | name | base unit | aliases):
 (none yet)
 Message: bought Dynamo 3.6kg at Giant for 11.95
-Output: {"events":[{"action":"bought","item_id":null,"item_name":"Laundry detergent","base_unit":"g","quantity_text":"3.6kg","total_price_sgd":11.95,"store":"Giant","brand":"Dynamo","adds_to_count":false,"expiry_text":null}],"clarify":null}
+Output: {"events":[{"action":"bought","item_id":null,"item_name":"Laundry detergent","base_unit":"g","quantity_text":"3.6kg","total_price_sgd":11.95,"store":"Giant","brand":"Dynamo","adds_to_count":false,"expiry_text":null,"description":null}],"clarify":null}
 
 Known items (id | name | base unit | aliases):
 rice | Rice | g |
 shampoo | Shampoo | ml |
 Message: is $7.50 for 5kg Royal Umbrella rice at Sheng Siong ok?
-Output: {"events":[{"action":"price_check","item_id":"rice","item_name":"rice","base_unit":"g","quantity_text":"5kg","total_price_sgd":7.5,"store":"Sheng Siong","brand":"Royal Umbrella","adds_to_count":false,"expiry_text":null}],"clarify":null}
+Output: {"events":[{"action":"price_check","item_id":"rice","item_name":"rice","base_unit":"g","quantity_text":"5kg","total_price_sgd":7.5,"store":"Sheng Siong","brand":"Royal Umbrella","adds_to_count":false,"expiry_text":null,"description":null}],"clarify":null}
 
 Known items (id | name | base unit | aliases):
 toilet-paper | Toilet paper | roll | loo roll, TP
@@ -211,40 +214,40 @@ Known items (id | name | base unit | aliases):
 body-wash | Body wash | ml | shower gel
 rice | Rice | g |
 Message: shower gel finish
-Output: {"events":[{"action":"finished","item_id":"body-wash","item_name":"shower gel","base_unit":"ml","quantity_text":null,"total_price_sgd":null,"store":null,"brand":null,"adds_to_count":false,"expiry_text":null}],"clarify":null}
+Output: {"events":[{"action":"finished","item_id":"body-wash","item_name":"shower gel","base_unit":"ml","quantity_text":null,"total_price_sgd":null,"store":null,"brand":null,"adds_to_count":false,"expiry_text":null,"description":null}],"clarify":null}
 
 Known items (id | name | base unit | aliases):
 toilet-paper | Toilet paper | roll | loo roll, TP
 rice | Rice | g |
 Message: the body wash is finished
-Output: {"events":[{"action":"finished","item_id":null,"item_name":"Body wash","base_unit":"ml","quantity_text":null,"total_price_sgd":null,"store":null,"brand":null,"adds_to_count":false,"expiry_text":null}],"clarify":null}
+Output: {"events":[{"action":"finished","item_id":null,"item_name":"Body wash","base_unit":"ml","quantity_text":null,"total_price_sgd":null,"store":null,"brand":null,"adds_to_count":false,"expiry_text":null,"description":null}],"clarify":null}
 
 Known items (id | name | base unit | aliases):
 hair-conditioner | Hair conditioner | ml | conditioner
 wet-wipes | Wet wipes | piece |
 Message: ordered fabric conditioner 2 bottles 3.10 from taobao
-Output: {"events":[{"action":"bought","item_id":null,"item_name":"Fabric conditioner","base_unit":"ml","quantity_text":"2 bottles","total_price_sgd":3.1,"store":"taobao","brand":null,"adds_to_count":false,"expiry_text":null}],"clarify":null}
+Output: {"events":[{"action":"bought","item_id":null,"item_name":"Fabric conditioner","base_unit":"ml","quantity_text":"2 bottles","total_price_sgd":3.1,"store":"taobao","brand":null,"adds_to_count":false,"expiry_text":null,"description":null}],"clarify":null}
 
 Known items (id | name | base unit | aliases):
 toilet-paper | Toilet paper | roll | loo roll, TP
 rice | Rice | g |
 Message: this is the last bottle of soy sauce, just opened it
-Output: {"events":[{"action":"opened_last","item_id":null,"item_name":"Soy sauce","base_unit":"ml","quantity_text":null,"total_price_sgd":null,"store":null,"brand":null,"adds_to_count":false,"expiry_text":null}],"clarify":null}
+Output: {"events":[{"action":"opened_last","item_id":null,"item_name":"Soy sauce","base_unit":"ml","quantity_text":null,"total_price_sgd":null,"store":null,"brand":null,"adds_to_count":false,"expiry_text":null,"description":null}],"clarify":null}
 
 Known items (id | name | base unit | aliases):
 (none yet)
 Message: ran out of oyster sauce
-Output: {"events":[{"action":"finished","item_id":null,"item_name":"Oyster sauce","base_unit":"ml","quantity_text":null,"total_price_sgd":null,"store":null,"brand":null,"adds_to_count":false,"expiry_text":null}],"clarify":null}
+Output: {"events":[{"action":"finished","item_id":null,"item_name":"Oyster sauce","base_unit":"ml","quantity_text":null,"total_price_sgd":null,"store":null,"brand":null,"adds_to_count":false,"expiry_text":null,"description":null}],"clarify":null}
 
 Known items (id | name | base unit | aliases):
 rice | Rice | g |
 Message: counted the storeroom: 6 cans of tuna
-Output: {"events":[{"action":"stock_count","item_id":null,"item_name":"Canned tuna","base_unit":"piece","quantity_text":"6 cans","total_price_sgd":null,"store":null,"brand":null,"adds_to_count":false,"expiry_text":null}],"clarify":null}
+Output: {"events":[{"action":"stock_count","item_id":null,"item_name":"Canned tuna","base_unit":"piece","quantity_text":"6 cans","total_price_sgd":null,"store":null,"brand":null,"adds_to_count":false,"expiry_text":null,"description":null}],"clarify":null}
 
 Known items (id | name | base unit | aliases):
 kitchen-towel | Kitchen towel | roll | kitchen roll
 Message: used 2 rolls of kitchen towel cleaning up the spill
-Output: {"events":[{"action":"used","item_id":"kitchen-towel","item_name":"kitchen towel","base_unit":"roll","quantity_text":"2 rolls","total_price_sgd":null,"store":null,"brand":null,"adds_to_count":false,"expiry_text":null}],"clarify":null}
+Output: {"events":[{"action":"used","item_id":"kitchen-towel","item_name":"kitchen towel","base_unit":"roll","quantity_text":"2 rolls","total_price_sgd":null,"store":null,"brand":null,"adds_to_count":false,"expiry_text":null,"description":null}],"clarify":null}
 
 Known items (id | name | base unit | aliases):
 shampoo | Shampoo | ml |
@@ -254,12 +257,12 @@ Output: {"events":[],"clarify":null}
 Known items (id | name | base unit | aliases):
 shampoo | Shampoo | ml |
 Message: 2 bottles of shampoo at $4.50 each from Watsons
-Output: {"events":[{"action":"bought","item_id":"shampoo","item_name":"shampoo","base_unit":"ml","quantity_text":"2 bottles","total_price_sgd":null,"store":"Watsons","brand":null,"adds_to_count":false,"expiry_text":null}],"clarify":null}
+Output: {"events":[{"action":"bought","item_id":"shampoo","item_name":"shampoo","base_unit":"ml","quantity_text":"2 bottles","total_price_sgd":null,"store":"Watsons","brand":null,"adds_to_count":false,"expiry_text":null,"description":null}],"clarify":null}
 
 Known items (id | name | base unit | aliases):
 rice | Rice | g |
 Message: got bin liners at Giant, 2 packs of 30 pcs for $5.50 (U.P. $6.40)
-Output: {"events":[{"action":"bought","item_id":null,"item_name":"Bin liners","base_unit":"piece","quantity_text":"2 packs of 30 pcs","total_price_sgd":5.5,"store":"Giant","brand":null,"adds_to_count":false,"expiry_text":null}],"clarify":null}
+Output: {"events":[{"action":"bought","item_id":null,"item_name":"Bin liners","base_unit":"piece","quantity_text":"2 packs of 30 pcs","total_price_sgd":5.5,"store":"Giant","brand":null,"adds_to_count":false,"expiry_text":null,"description":null}],"clarify":null}
 
 Known items (id | name | base unit | aliases):
 dish-soap | Dishwashing liquid | ml | dish soap
@@ -271,13 +274,13 @@ Output: {"events":[],"clarify":"What did you finish: the dishwashing liquid, bod
 Known items (id | name | base unit | aliases):
 (none yet)
 Message: Sheng Siong trip: bread and peanut butter, $7.80 altogether
-Output: {"events":[{"action":"bought","item_id":null,"item_name":"Bread","base_unit":"piece","quantity_text":null,"total_price_sgd":null,"store":"Sheng Siong","brand":null,"adds_to_count":false,"expiry_text":null},{"action":"bought","item_id":null,"item_name":"Peanut butter","base_unit":"g","quantity_text":null,"total_price_sgd":null,"store":"Sheng Siong","brand":null,"adds_to_count":false,"expiry_text":null}],"clarify":null}
+Output: {"events":[{"action":"bought","item_id":null,"item_name":"Bread","base_unit":"piece","quantity_text":null,"total_price_sgd":null,"store":"Sheng Siong","brand":null,"adds_to_count":false,"expiry_text":null,"description":null},{"action":"bought","item_id":null,"item_name":"Peanut butter","base_unit":"g","quantity_text":null,"total_price_sgd":null,"store":"Sheng Siong","brand":null,"adds_to_count":false,"expiry_text":null,"description":null}],"clarify":null}
 
 Known items (id | name | base unit | aliases):
 rice | Rice | g |
 toilet-paper | Toilet paper | roll | loo roll, TP
 Message: there's a lot of rice left, enough for the month
-Output: {"events":[{"action":"still_have","item_id":"rice","item_name":"rice","base_unit":"g","quantity_text":null,"total_price_sgd":null,"store":null,"brand":null,"adds_to_count":false,"expiry_text":null}],"clarify":null}
+Output: {"events":[{"action":"still_have","item_id":"rice","item_name":"rice","base_unit":"g","quantity_text":null,"total_price_sgd":null,"store":null,"brand":null,"adds_to_count":false,"expiry_text":null,"description":null}],"clarify":null}
 
 Known items (id | name | base unit | aliases):
 hand-wash | Hand wash | g |
@@ -285,12 +288,12 @@ shampoo | Shampoo | ml |
 Message: Hand wash stock take
 4 bottles 400ml Lux white tea expires July 2028
 1 bottle Dettol 250ml
-Output: {"events":[{"action":"stock_count","item_id":"hand-wash","item_name":"Hand wash","base_unit":"g","quantity_text":"4 bottles 400ml","total_price_sgd":null,"store":null,"brand":"Lux","adds_to_count":false,"expiry_text":"expires July 2028"},{"action":"stock_count","item_id":"hand-wash","item_name":"Hand wash","base_unit":"g","quantity_text":"1 bottle Dettol 250ml","total_price_sgd":null,"store":null,"brand":"Dettol","adds_to_count":false,"expiry_text":null}],"clarify":null}
+Output: {"events":[{"action":"stock_count","item_id":"hand-wash","item_name":"Hand wash","base_unit":"g","quantity_text":"4 bottles 400ml","total_price_sgd":null,"store":null,"brand":"Lux","adds_to_count":false,"expiry_text":"expires July 2028","description":"white tea"},{"action":"stock_count","item_id":"hand-wash","item_name":"Hand wash","base_unit":"g","quantity_text":"1 bottle Dettol 250ml","total_price_sgd":null,"store":null,"brand":"Dettol","adds_to_count":false,"expiry_text":null,"description":null}],"clarify":null}
 
 Known items (id | name | base unit | aliases):
 hand-wash | Hand wash | g |
 Message: I have another 3 bottles of Lux hand wash, 400g each
-Output: {"events":[{"action":"stock_count","item_id":"hand-wash","item_name":"hand wash","base_unit":"g","quantity_text":"3 bottles of Lux hand wash, 400g each","total_price_sgd":null,"store":null,"brand":"Lux","adds_to_count":true,"expiry_text":null}],"clarify":null}
+Output: {"events":[{"action":"stock_count","item_id":"hand-wash","item_name":"hand wash","base_unit":"g","quantity_text":"3 bottles of Lux hand wash, 400g each","total_price_sgd":null,"store":null,"brand":"Lux","adds_to_count":true,"expiry_text":null,"description":null}],"clarify":null}
 
 Known items (id | name | base unit | aliases):
 rice | Rice | g |
@@ -347,7 +350,8 @@ def normalise_free_text(data, known_ids):
     """Clean the model's output into (events, clarify).
 
     Events come back with keys: action, item_id, item_name, base_unit,
-    quantity_text, total_price, store, brand, adds (a count that adds to an earlier one), expiry_text.
+    quantity_text, total_price, store, brand, adds (a count that adds to an earlier one), expiry_text,
+    description.
     """
     events = []
     raw_events = data.get("events") if isinstance(data, dict) else None
@@ -399,7 +403,9 @@ def ground_free_text(events, text, stores=(), units=None, brands=()) -> list:
             brand = None
         line = _event_line(event, text)
         brand = brand or _brand_on(line, brands)
-        expiry = _grounded_expiry(event, text, line, missed) if event["action"] in ("bought", "stock_count") else None
+        kept = event["action"] in ("bought", "stock_count")   # what is at home: the rest has no pack to tell apart
+        expiry = _grounded_expiry(event, text, line, missed) if kept else None
+        description = _grounded_description(event, text, line, brand) if kept else None
         if event["action"] == "price_check" and price is None:
             continue  # a price check without a price has nothing to add to the price book
         if event["action"] == "used" and quantity is None:
@@ -415,6 +421,7 @@ def ground_free_text(events, text, stores=(), units=None, brands=()) -> list:
             "store_is_new": store_is_new,
             "on": on,
             "expiry": expiry,
+            "description": description,
             "brand": brand,
             "adds": event.get("adds", False),
             "missed": tuple(missed),
@@ -464,18 +471,26 @@ def _nearest_number(tokens):
     return None
 
 
+# What the model copied for an event, and how much each tells one line of a stocktake from another.
+# The expiry tells the most: lines often share a quantity and a brand, seldom a date.
+_LINE_CLUES = (("expiry_text", 2), ("quantity_text", 1), ("brand", 1), ("description", 1))
+
+
 def _event_line(event, text):
     """The line of the message an event was read from, or None if that can't be told.
 
-    That is the message itself, or in a message of several lines the one its
-    quantity was copied from. If several lines have that quantity ("4 bottles
-    400ml" three times), the one with its expiry, then the one with its brand.
+    That is the message itself, or in a message of several lines the one with
+    the most of what the model copied for the event. The model sometimes copies
+    a word from a neighbouring line ("each"), so no single clue decides. Two
+    lines that tie could be either.
     """
     lines = [line for line in text.splitlines() if line.strip()]
-    for quoted in (event["quantity_text"], event.get("expiry_text"), event["brand"]):
-        if len(lines) > 1 and quoted:
-            lines = [line for line in lines if _quoted_from(quoted, line)] or lines
-    return lines[0] if len(lines) == 1 else None
+    if len(lines) == 1:
+        return lines[0]
+    scores = [sum(weight for key, weight in _LINE_CLUES if event.get(key) and _quoted_from(event[key], line))
+              for line in lines]
+    best = max(scores, default=0)
+    return lines[scores.index(best)] if best and scores.count(best) == 1 else None
 
 
 def _grounded_expiry(event, text, line, missed):
@@ -495,6 +510,20 @@ def _grounded_expiry(event, text, line, missed):
         missed.append("expiry")
         return None
     return expiry
+
+
+def _grounded_description(event, text, line, brand):
+    """The model's description of a pack ("pink"), kept only if it is written on the event's own line.
+
+    Without a line to go by, it has to be in the message. It is dropped if it is
+    only the brand, and dropped quietly: it is a help in telling packs apart, not a fact anything is counted by.
+    """
+    description = event.get("description")
+    if not description or not _quoted_from(description, line or text):
+        return None
+    if brand and _squeeze(description) == _squeeze(brand):
+        return None
+    return description
 
 
 def _brand_on(line, brands):
@@ -582,6 +611,7 @@ def _normalise_event(raw, known_ids):
         "brand": _text(raw.get("brand")),
         "adds": action == "stock_count" and raw.get("adds_to_count") is True,
         "expiry_text": _text(raw.get("expiry_text")),
+        "description": (_text(raw.get("description")) or "")[:MAX_DESCRIPTION_LENGTH].strip() or None,
     }
 
 

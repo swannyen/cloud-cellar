@@ -326,7 +326,17 @@ def _amount(entry, item):
     """The entry's total for this item (see structured.resolve_quantity), or why it can't be known."""
     if entry["action"] not in ("bought", "used", "stock_count", "price_check"):
         return NO_AMOUNT
-    return structured.resolve_quantity(entry["quantity"], item["base_unit"], item.get("pack_size"))
+    amount = structured.resolve_quantity(entry["quantity"], item["base_unit"], item.get("pack_size"))
+    quantity = entry["quantity"] or {"kind": "packs", "packs": 1}
+    if entry["action"] == "used" and quantity["kind"] == "packs" and amount != structured.UNCLEAR_COUNT:
+        # Packs used are the next ones to be used, at their own size: "/used aesop hand wash" is its 500 g bottle.
+        by_pack = model.packs_amount(store.list_events(item["item_id"]), item.get("pack_size"), quantity["packs"],
+                                     entry.get("brand"), item["base_unit"])
+        if by_pack:
+            qty, size = by_pack
+            # With packs of different sizes, a count of packs times one size would be wrong, so only the total is kept.
+            return {"qty": qty, "packs": quantity["packs"] if size else None, "units_per_pack": None}
+    return amount
 
 
 def _typed_unit(entry):
@@ -345,6 +355,8 @@ def _event_record(entry, amount, sender, happened, sent_at, how, expires_on=None
         "brand": entry.get("brand"),
         "adds": True if entry.get("adds") else None,  # "I have another 3": added to the count, not a new count
         "expires_on": expires_on,
+        # "pink", "green tea fragrance": what tells this pack from the others, on what is at home.
+        "description": entry.get("description") if entry["action"] in ("bought", "stock_count") else None,
         "user_id": sender["id"],
         "user_name": sender["name"],
         "raw_text": entry["raw"][:MAX_RAW_TEXT],

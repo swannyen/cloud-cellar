@@ -44,6 +44,7 @@ class NormaliseTest(unittest.TestCase):
             "brand": None,
             "adds": False,
             "expiry_text": None,
+            "description": None,
         })
 
     def test_only_a_count_adds_to_an_earlier_count(self):
