@@ -29,7 +29,7 @@ The design and the phase-by-phase build plan are in [PLAN.md](PLAN.md).
 
 Set `FREE_TEXT_AI` to `"off"` in [template.yaml](template.yaml) to stop the free-text calls: those lines then get a hint about the format instead. `/stats` shows how many lines needed AI this month.
 
-**Built, not deployed yet: the stock table is protected.** In [template.yaml](template.yaml) the table is kept if the stack is deleted or a change would replace it, DynamoDB refuses to delete it while deletion protection is on, and point-in-time recovery keeps 35 days of restore points. `scripts/export_csv.py` (below) copies everything to the laptop.
+**The stock table is protected (deployed 4 Nov 2026).** In [template.yaml](template.yaml) the table is kept if the stack is deleted or a change would replace it, DynamoDB refuses to delete it while deletion protection is on, and point-in-time recovery keeps 35 days of restore points. `scripts/export_csv.py` (below) copies everything to the laptop.
 
 The daily message (Phase 3a), and run-out predictions, nudges and stock-up suggestions (Phase 3b), are not built yet.
 
