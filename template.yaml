@@ -26,7 +26,11 @@ Globals:
 Resources:
   StockTable:
     Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain          # the data stays if the stack is deleted
+    UpdateReplacePolicy: Retain     # ...or if a change would replace the table
     Properties:
+      DeletionProtectionEnabled: true                                       # DynamoDB refuses to delete it, by hand too, until this is off
+      PointInTimeRecoverySpecification: {PointInTimeRecoveryEnabled: true}  # restore to any second in the last 35 days, into a new table
       BillingMode: PROVISIONED
       ProvisionedThroughput: {ReadCapacityUnits: 5, WriteCapacityUnits: 5}
       AttributeDefinitions:

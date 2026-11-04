@@ -29,7 +29,9 @@ The design and the phase-by-phase build plan are in [PLAN.md](PLAN.md).
 
 Set `FREE_TEXT_AI` to `"off"` in [template.yaml](template.yaml) to stop the free-text calls: those lines then get a hint about the format instead. `/stats` shows how many lines needed AI this month.
 
-Run-out predictions, nudges and stock-up suggestions (Phase 3) are not built yet.
+**Built, not deployed yet: the stock table is protected.** In [template.yaml](template.yaml) the table is kept if the stack is deleted or a change would replace it, DynamoDB refuses to delete it while deletion protection is on, and point-in-time recovery keeps 35 days of restore points. `scripts/export_csv.py` (below) copies everything to the laptop.
+
+The daily message (Phase 3a), and run-out predictions, nudges and stock-up suggestions (Phase 3b), are not built yet.
 
 ## Deploy
 
@@ -54,6 +56,20 @@ After a deploy that changes how stock is counted, recompute the figures cached o
 python scripts/recompute_items.py           # shows before -> after, saves nothing
 python scripts/recompute_items.py --write   # saves it
 ```
+
+## Backup
+
+A launchd job on the Mac backs the table up on the 1st and the 15th of each month. It checks every day at 10:00 and at login, and exports only when there is no backup yet since the last 1st or 15th, so a day the Mac was off is made up the next time it's on. A failed export puts up a notification.
+
+```bash
+PYTHON=<a Python with boto3> ./scripts/install_backup_schedule.sh   # install, or update after changing the export code
+./scripts/install_backup_schedule.sh --run-now                      # one backup now, through the job
+./scripts/install_backup_schedule.sh --uninstall                    # remove the job; the backups stay
+
+AWS_PROFILE=household AWS_REGION=ap-southeast-2 python3 scripts/export_csv.py   # a backup by hand
+```
+
+Each backup is two files in `~/cloud-cellar-backups`: `cellar-<date-time>.csv`, one row per entry for a spreadsheet, and `.json`, every record as stored. The folder is outside the repo because the files hold the family's messages, and outside `~/Documents` because macOS doesn't let launchd jobs read or write there. For the same reason, the installer copies the export code to `~/Library/Application Support/cloud-cellar-backup`, so run it again after changing `scripts/export_csv.py` or `src/`. The log is `~/Library/Logs/cloud-cellar-backup.log`. Restoring from point-in-time recovery is in PLAN.md §7.4.
 
 ## Tests
 

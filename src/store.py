@@ -230,6 +230,18 @@ def _query(pk) -> list:
         kwargs["ExclusiveStartKey"] = page["LastEvaluatedKey"]
 
 
+def all_records() -> list:
+    """Every record in the table, keys included, for scripts/export_csv.py. A full scan, so the bot never calls it."""
+    kwargs = {"ConsistentRead": True}
+    records = []
+    while True:
+        page = _get_table().scan(**kwargs)
+        records.extend(page["Items"])
+        if "LastEvaluatedKey" not in page:
+            return [_from_db(record) for record in records]
+        kwargs["ExclusiveStartKey"] = page["LastEvaluatedKey"]
+
+
 def _delete(pk, sk):
     _get_table().delete_item(Key={"pk": pk, "sk": sk})
 

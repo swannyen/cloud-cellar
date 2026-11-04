@@ -68,6 +68,18 @@ class FakeTable:
             result["LastEvaluatedKey"] = {"pk": value, "sk": page[-1]["sk"]}
         return result
 
+    def scan(self, ConsistentRead=False, ExclusiveStartKey=None):
+        self._maybe_fail("Scan")
+        rows = [row for _, row in sorted(self.rows.items())]
+        if ExclusiveStartKey:
+            start = (ExclusiveStartKey["pk"], ExclusiveStartKey["sk"])
+            rows = [row for row in rows if (row["pk"], row["sk"]) > start]
+        page = rows[: self.page_size] if self.page_size else rows
+        result = {"Items": copy.deepcopy(page)}
+        if len(page) < len(rows):
+            result["LastEvaluatedKey"] = {"pk": page[-1]["pk"], "sk": page[-1]["sk"]}
+        return result
+
     def keys(self, pk_prefix=""):
         return sorted(key for key in self.rows if key[0].startswith(pk_prefix))
 
