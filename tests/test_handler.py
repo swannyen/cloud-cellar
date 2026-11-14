@@ -750,5 +750,34 @@ class NoPriceRouteTest(HandlerTestCase):
         self.assertEqual(self.stats(), {"lines_structured": 1, "lines_rejected": 1})
 
 
+class CurrencyHandlerTest(HandlerTestCase):
+    """Prices in other currencies through the webhook (PLAN.md §8.5)."""
+
+    def setUp(self):
+        super().setUp()
+        self.add_item("rice", "Rice", "g")
+        fetch = mock.patch.object(handler.apply.rates, "fetch_rates",
+                                  return_value={"MYR": {"rate": 3.1744, "date": "2026-10-09"}})
+        self.fetch = fetch.start()
+        self.addCleanup(fetch.stop)
+
+    def test_a_line_in_a_currency_that_isnt_tracked_records_nothing_and_says_so(self):
+        self.call(message_update(text="+ rice 5kg JPY500\n+ rice 5kg RM18 ($5.70) @lotus"))
+        self.assertEqual(self.replies(), ["\n".join([
+            "✓ Rice: bought 5 kg for RM18.00 ($5.70) at Lotus (RM0.36/100 g). First MYR price recorded. "
+            "In SGD: $0.11/100 g. No SGD price to compare with yet. Rate RM1 = $0.317, from your two prices.",
+            replies.untracked_currency("JPY"),
+        ])])
+        self.assertEqual(len(store.list_events("rice")), 1)
+        self.assertEqual(self.stats()["lines_rejected"], 1)
+        self.fetch.assert_not_called()
+
+    def test_a_purchase_written_without_a_keyword_can_be_foreign_too(self):
+        self.call(message_update(text="rice 5kg RM 18 @lotus"))
+        event, = store.list_events("rice")
+        self.assertEqual((event["currency"], event["total_price"], event["total_price_home"]), ("MYR", 18, 5.67))
+        self.parse_free_text.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()

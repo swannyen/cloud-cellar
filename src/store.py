@@ -20,6 +20,7 @@ STORE_PK = "STORE"
 UNIT_PK = "UNIT"
 BRAND_PK = "BRAND"
 STATS_PK = "STATS"
+FX_PK = "FX"
 STAT_NAMES = ("lines_structured", "ai_match_calls", "ai_full_calls", "lines_rejected")
 
 _table = None
@@ -154,6 +155,18 @@ def save_brand(brand_id, name, added_by):
 
 def delete_brand(brand_id):
     _delete(BRAND_PK, brand_id)
+
+
+# --- Exchange rates (PLAN.md §8.5) -------------------------------------------------
+# sk is the Singapore day rates were fetched for ("2026-11-13").
+
+def list_fx() -> list:
+    """Every saved exchange-rate record, oldest day first, each with its "sk"."""
+    return _query(FX_PK)
+
+
+def save_fx(sk, record):
+    _put(FX_PK, sk, record)
 
 
 # --- Guessed matches waiting for a button tap -------------------------------------

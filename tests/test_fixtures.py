@@ -7,6 +7,7 @@ from pathlib import Path
 import fakes  # noqa: F401  (puts src/ on sys.path)
 
 import ai
+import currency
 import structured
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -37,7 +38,8 @@ class FixtureFileTest(unittest.TestCase):
 
     def test_expected_events_are_well_formed(self):
         all_ids = {item["item_id"] for item in self.known_items}
-        allowed = {"action", "item_id", "new", "base_unit", "qty", "packs", "count", "total_price", "store", "brand"}
+        allowed = {"action", "item_id", "new", "base_unit", "qty", "packs", "count", "total_price", "currency",
+                   "total_price_home", "store", "brand"}
         for fixture in self.fixtures:
             known = set(fixture.get("known", all_ids))
             self.assertLessEqual(known, all_ids, fixture["id"])
@@ -125,8 +127,13 @@ class GroundingFixtureTest(unittest.TestCase):
             written = structured.numbers_in(fixture["text"])
             for event in fixture["expect"]:
                 with self.subTest(fixture=fixture["id"]):
-                    if "total_price" in event:
-                        self.assertIn(float(event["total_price"]), written)
+                    for key in ("total_price", "total_price_home"):
+                        if key in event:
+                            self.assertIn(float(event[key]), written)
+                    if "currency" in event or "total_price_home" in event:
+                        self.assertIn("total_price", event, "a currency or an SGD price goes with a price")
+                    if "currency" in event:
+                        self.assertTrue(currency.is_tracked(event["currency"]), "an untracked currency records no price")
 
     def test_expected_stores_are_written_in_the_message(self):
         names = structured.store_names()
@@ -154,9 +161,27 @@ class GraderTest(unittest.TestCase):
     def got(self, **changes):
         entry = {"action": "bought", "item_id": "rice", "phrase": "rice", "base_unit": "g",
                  "quantity": {"kind": "amount", "amount": 5000, "unit": "g"},
-                 "total_price": 13.5, "store": "sheng siong", "brand": None, "missed": ()}
+                 "total_price": 13.5, "currency": "SGD", "total_price_home": None, "store": "sheng siong",
+                 "brand": None, "missed": ()}
         entry.update(changes)
+        if entry["total_price"] is None and "currency" not in changes:
+            entry["currency"] = None   # as ground_free_text leaves an entry with no price
         return [entry]
+
+    def test_a_price_is_sgd_unless_the_fixture_says_otherwise(self):
+        self.assertFalse(self.passes(self.FIXTURE, self.got(currency="MYR")))
+        foreign = {"id": "y", "text": "t", "expect": [
+            {"action": "bought", "item_id": "rice", "qty": 5000, "total_price": 18, "currency": "MYR",
+             "total_price_home": 5.7, "store": "Sheng Siong"}]}
+        self.assertTrue(self.passes(foreign, self.got(total_price=18, currency="MYR", total_price_home=5.7)))
+        ok, _, problems = eval_freetext.grade(foreign, self.got(total_price=18, currency="SGD"), None)
+        self.assertEqual(problems, ["bought rice: wrong currency, total_price_home"])
+
+    def test_no_price_means_no_currency(self):
+        no_price = {"id": "z", "text": "t", "expect": [{"action": "bought", "item_id": "rice", "qty": 5000,
+                                                        "store": "Sheng Siong"}]}
+        self.assertTrue(self.passes(no_price, self.got(total_price=None, currency=None)))
+        self.assertFalse(self.passes(no_price, self.got(total_price=None, currency="SGD")))
 
     def passes(self, fixture, entries):
         return eval_freetext.grade(fixture, entries, None)[0]

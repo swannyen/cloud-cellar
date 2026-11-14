@@ -129,6 +129,63 @@ class BrandOnTheLineTest(unittest.TestCase):
                          ["Lux"])
 
 
+class CurrencyGroundingTest(unittest.TestCase):
+    """A price's currency is the one written on it, never the model's guess (PLAN.md §8.5)."""
+
+    def price(self, text, **fields):
+        entry = ground(text, **fields)
+        return entry["total_price"], entry["currency"], entry["total_price_home"], entry["missed"]
+
+    def test_a_marked_price_keeps_its_currency(self):
+        self.assertEqual(self.price("bought face masks 10pcs RM12 at Watsons JB", total_price=12, currency="MYR"),
+                         (12, "MYR", None, ()))
+        self.assertEqual(self.price("face masks 10pcs 12 yuan on taobao", total_price=12, currency="CNY"),
+                         (12, "CNY", None, ()))
+
+    def test_the_marker_wins_over_the_models_currency(self):
+        self.assertEqual(self.price("bought face masks RM12", total_price=12, currency="SGD"), (12, "MYR", None, ()))
+        self.assertEqual(self.price("bought face masks RM12", total_price=12, currency=None), (12, "MYR", None, ()))
+
+    def test_an_amount_with_no_marker_is_sgd_and_a_model_that_says_otherwise_worked_it_out(self):
+        self.assertEqual(self.price("bought face masks for 12.90", total_price=12.9, currency="SGD"),
+                         (12.9, "SGD", None, ()))
+        self.assertEqual(self.price("bought face masks in JB for 12", total_price=12, currency="MYR"),
+                         (None, None, None, ("price",)))
+
+    def test_one_amount_in_two_currencies_goes_by_the_models_pick(self):
+        text = "face masks RM10 at the pharmacy, hand cream $10"
+        self.assertEqual(self.price(text, total_price=10, currency="MYR"), (10, "MYR", None, ()))
+        self.assertEqual(self.price(text, total_price=10, currency="SGD"), (10, "SGD", None, ()))
+
+    def test_the_sgd_price_written_beside_a_foreign_one(self):
+        text = "got face masks in JB for RM25.90, about $8.10 on the card"
+        self.assertEqual(self.price(text, total_price=25.9, currency="MYR", total_price_home=8.1),
+                         (25.9, "MYR", 8.1, ()))
+        self.assertEqual(self.price("face masks RM25.90 (8.10 sgd)", total_price=25.9, currency="MYR",
+                                    total_price_home=8.1), (25.9, "MYR", 8.1, ()))
+
+    def test_an_sgd_price_that_isnt_written_or_isnt_sgd_is_dropped(self):
+        self.assertEqual(self.price("face masks RM25.90", total_price=25.9, currency="MYR", total_price_home=8.16),
+                         (25.9, "MYR", None, ("SGD price",)))
+        self.assertEqual(self.price("face masks RM25.90 or ¥40", total_price=25.9, currency="MYR",
+                                    total_price_home=40), (25.9, "MYR", None, ("SGD price",)))
+
+    def test_an_sgd_price_beside_an_sgd_price_is_nothing(self):
+        self.assertEqual(self.price("face masks $8.10", total_price=8.1, currency="SGD", total_price_home=8.1),
+                         (8.1, "SGD", None, ()))
+
+    def test_a_currency_that_isnt_tracked_drops_the_price_and_says_which(self):
+        entry = ground("bought face masks in Tokyo for 3000 yen", total_price=3000, currency="JPY")
+        self.assertEqual((entry["total_price"], entry["currency"], entry["untracked_currency"], entry["missed"]),
+                         (None, None, "JPY", ()))
+
+    def test_the_models_currency_is_read_as_a_code(self):
+        normalised, _ = ai.normalise_free_text({"events": [{
+            "action": "bought", "item_id": None, "item_name": "Rice", "base_unit": "g", "currency": currency_word,
+            "total_price": 18} for currency_word in ("RM", "myr", "yuan", "JPY", "dollars", 5)]}, set())
+        self.assertEqual([event["currency"] for event in normalised], ["MYR", "MYR", "CNY", "JPY", None, None])
+
+
 class GroundingTest(unittest.TestCase):
     """Only what is written in the message survives (PLAN.md §5.4)."""
 
@@ -138,6 +195,7 @@ class GroundingTest(unittest.TestCase):
         self.assertEqual(entry, {
             "action": "bought", "item_id": None, "phrase": "Facial masks", "base_unit": "piece",
             "quantity": {"kind": "amount", "amount": 5, "unit": "piece"}, "total_price": 1.86,
+            "currency": "SGD", "total_price_home": None, "untracked_currency": None,
             "store": "Taobao", "store_is_new": False, "brand": None, "adds": False, "missed": (),
             "on": None, "expiry": None, "description": None, "raw": "Facial masks 5 pcs 1.86 from Taobao",
             "free_text": True,

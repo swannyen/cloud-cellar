@@ -1,12 +1,15 @@
 """The price book: an item's price history and how a new price compares with it (PLAN.md §8.2).
 
-Pure, no I/O. Unit prices are per base unit, in the event's own currency. The
-stock-up suggestion needs the usage rate, so it comes with Phase 3.
+Pure, no I/O. Unit prices are per base unit, in the event's own currency. A
+price is only ever judged against earlier prices in its own currency; a foreign
+one with a base-currency value is also set against the best base-currency price
+(PLAN.md §8.5). The stock-up suggestion needs the usage rate, so it comes with Phase 3b.
 """
 import statistics
 from datetime import datetime, timedelta, timezone
 
 import config
+import currency
 
 SGT = timezone(timedelta(hours=8))  # Singapore has no daylight saving
 PRICED_ACTIONS = ("bought", "price_check")  # paid and seen; a price on any other entry says nothing
@@ -24,7 +27,8 @@ def price_points(events, now, currency=None) -> list:
     Every entry is a true log, and each one counts towards stock. But a price
     says the same thing however many times it is written, so entries on one
     day with the same unit price and store are one point, and "entries" says
-    how many. A point is {"unit_price", "day", "store", "paid", "entries"}.
+    how many. A point is {"unit_price", "unit_price_home", "day", "store", "paid", "entries"}, where
+    unit_price_home is the base-currency value (see home_value), or None when it isn't known.
     """
     currency = currency or config.home_currency()
     oldest = now - HISTORY_DAYS * 24 * 60 * 60
@@ -37,6 +41,7 @@ def price_points(events, now, currency=None) -> list:
             continue
         point = {
             "unit_price": event["unit_price"],
+            "unit_price_home": home_value(event),
             "day": when.astimezone(SGT).date(),
             "store": event.get("store"),
             "paid": event["action"] == "bought",
@@ -53,16 +58,50 @@ def price_points(events, now, currency=None) -> list:
 
 
 def event_currency(event) -> str:
-    """A price is in the home currency unless its event says otherwise.
+    """The currency an event's price is in. The purchases logged before events stored one are SGD."""
+    return event.get("currency") or currency.LEGACY_CURRENCY
 
-    The purchases logged before events stored a currency have none.
+
+def home_value(event):
+    """An event's unit price in the base currency, or None if that isn't known.
+
+    A base-currency price is its own value. A foreign one has the value worked
+    out when it was logged, at that day's rate, if a rate was to be had. Either
+    only counts if the event was logged under today's base currency.
     """
-    return event.get("currency") or config.home_currency()
+    home = config.home_currency()
+    if (event.get("home_currency") or currency.LEGACY_CURRENCY) != home:
+        return None
+    if event_currency(event) == home:
+        return event.get("unit_price")
+    return event.get("unit_price_home")
 
 
-def other_currencies(events) -> list:
-    """The currencies other than the home one that the item has prices in."""
-    return sorted({event_currency(event) for event in events if _has_price(event)} - {config.home_currency()})
+def currencies(events) -> list:
+    """The currencies the item has prices in: the base currency first, then the others by code."""
+    found = {event_currency(event) for event in events if _has_price(event)}
+    home = config.home_currency()
+    return ([home] if home in found else []) + sorted(found - {home})
+
+
+def home_comparison(record, events, now):
+    """For a foreign price with a base-currency value: {"unit_price_home", "best"}, best being the
+    best earlier base-currency point (None if there are none). None for any other price."""
+    if event_currency(record) == config.home_currency() or record.get("unit_price_home") is None:
+        return None
+    points = price_points(events, now)
+    return {"unit_price_home": record["unit_price_home"], "best": best_point(points) if points else None}
+
+
+def cheapest_anywhere(events, now):
+    """The cheapest price in any currency over the last year, by its base-currency value, as
+    {"unit_price", "currency", "unit_price_home", "day", "store"}. None if no price has one."""
+    best = None
+    for code in currencies(events):
+        for point in price_points(events, now, code):
+            if point["unit_price_home"] is not None and (best is None or point["unit_price_home"] <= best["unit_price_home"]):
+                best = {**point, "currency": code}
+    return best
 
 
 def best_point(points) -> dict:

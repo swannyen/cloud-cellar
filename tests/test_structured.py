@@ -27,8 +27,11 @@ def packs_of(count, size, unit=None):
     return {"kind": "packs_of", "packs": count, "size": size, "unit": unit}
 
 
-def entry(action, phrase, quantity=None, price=None, store=None, store_is_new=False, on=None, expiry=None):
+def entry(action, phrase, quantity=None, price=None, store=None, store_is_new=False, on=None, expiry=None,
+          currency=None, home_price=None):
+    """An expected entry. A price is SGD unless a currency is given; home_price is the SGD price written beside it."""
     return {"action": action, "phrase": phrase, "quantity": quantity, "total_price": price,
+            "currency": (currency or "SGD") if price is not None else None, "total_price_home": home_price,
             "store": store, "store_is_new": store_is_new, "on": on, "expiry": expiry}
 
 
@@ -752,6 +755,105 @@ class BoughtWithPriceTest(unittest.TestCase):
         self.assertEqual(structured.parse_line("/bought hand wash 3x400g $9 exp 07/2029")["action"], "bought")
         self.assertIsNone(structured.parse_line("/add hand wash 3x400g exp 07/2029")["total_price"])
         self.assertEqual(structured.parse_line("+ hand wash 3x400g")["action"], "bought")
+
+
+class CurrencyTest(unittest.TestCase):
+    """Prices in other currencies, and a foreign price with its SGD price beside it (PLAN.md §8.5)."""
+
+    def test_a_price_in_each_tracked_currency(self):
+        cases = {
+            "+ rice 5kg RM18 @lotus": (18, "MYR"),
+            "+ rice 5kg RM 18 @lotus": (18, "MYR"),
+            "+ rice 5kg 18myr @lotus": (18, "MYR"),
+            "+ detergent 1kg US$12": (12, "USD"),
+            "+ detergent 1kg 12 usd": (12, "USD"),
+            "+ toothpaste 2 tubes ¥25.80 @taobao": (25.8, "CNY"),
+            "+ toothpaste 2 tubes 25.80 yuan @taobao": (25.8, "CNY"),
+            "+ toothpaste 2 tubes RMB25.80 @taobao": (25.8, "CNY"),
+            "+ rice 5kg S$12": (12, "SGD"),
+            "+ rice 5kg $12": (12, "SGD"),
+            "+ rice 5kg 12.90": (12.9, "SGD"),
+            "+ rice 5kg RM1,200": (1200, "MYR"),
+        }
+        for line, (price, code) in cases.items():
+            with self.subTest(line=line):
+                result = read(line)
+                self.assertEqual((result["total_price"], result["currency"], result["total_price_home"]),
+                                 (price, code, None))
+
+    def test_the_rest_of_the_line_is_read_as_before(self):
+        self.assertEqual(read("+ rice 5kg RM18 @lotus"),
+                         entry("bought", "rice", amount(5000, "g"), 18, "Lotus", True, currency="MYR"))
+        self.assertEqual(read("+ toothpaste 2 tubes 25.80 yuan taobao"),
+                         entry("bought", "toothpaste", packs(2), 25.8, "Taobao", currency="CNY"))
+
+    def test_a_foreign_price_with_its_sgd_price_beside_it(self):
+        lines = [
+            "+ rice 5kg RM18 $5.70 @lotus",
+            "+ rice 5kg RM18 ($5.70) @lotus",
+            "+ rice 5kg RM18 (S$5.70) @lotus",
+            "+ rice 5kg RM18 / S$5.70 @lotus",
+            "+ rice 5kg RM18/$5.70 @lotus",
+            "+ rice 5kg RM18 = $5.70 @lotus",
+            "+ rice 5kg RM18 ~$5.70 @lotus",
+            "+ rice 5kg RM18 (≈ $5.70) @lotus",
+            "+ rice 5kg $5.70 (RM18) @lotus",
+            "+ rice 5kg RM 18 SGD5.70 @lotus",
+            "+ rice RM18 ($5.70) 5kg @lotus",
+            # The SGD price without its "$": a bare number with two decimals is SGD, as on any line.
+            "+ rice 5kg RM18 5.70 @lotus",
+            "+ rice 5kg 5.70 RM18 @lotus",
+            "+ rice 5kg RM18 (5.70) @lotus",
+            "+ rice 5kg RM18 / 5.70 @lotus",
+            "+ rice 5kg RM18 = 5.70 @lotus",
+            "+ rice 5kg RM18 ~5.70 @lotus",
+            "+ rice 5kg 5.70 (RM18) @lotus",
+        ]
+        for line in lines:
+            with self.subTest(line=line):
+                self.assertEqual(read(line), entry("bought", "rice", amount(5000, "g"), 18, "Lotus", True,
+                                                   currency="MYR", home_price=5.7))
+
+    def test_with_no_quantity_the_sgd_price_still_needs_no_dollar_sign(self):
+        self.assertEqual(read("+ rice RM18 5.70 @lotus"),
+                         entry("bought", "rice", None, 18, "Lotus", True, currency="MYR", home_price=5.7))
+
+    def test_a_whole_number_next_to_a_foreign_price_is_still_a_pack_count(self):
+        self.assertEqual(read("+ eggs RM18 10 @lotus"), entry("bought", "eggs", packs(10), 18, "Lotus", True, currency="MYR"))
+
+    def test_a_bracketed_sgd_price_on_its_own_is_the_price_not_part_of_the_name(self):
+        result = read("+ rice 5kg (12.90) @lotus")
+        self.assertEqual((result["phrase"], result["total_price"], result["currency"]), ("rice", 12.9, "SGD"))
+
+    def test_a_price_check_can_carry_both_too(self):
+        result = read("? rice 5kg RM16 ($5.05) @lotus")
+        self.assertEqual((result["action"], result["total_price"], result["currency"], result["total_price_home"]),
+                         ("price_check", 16, "MYR", 5.05))
+
+    def test_two_prices_that_arent_a_foreign_one_and_its_sgd_one_are_not_read(self):
+        for line in ("+ rice 5kg RM18 RM20", "+ rice 5kg RM18 US$5", "+ rice 5kg $5 S$6", "+ rice 5kg 12.90 5.70",
+                     "+ rice 5kg $12.90 (5.70)", "+ rice 5kg RM18 $5.70 ¥30", "+ rice 5kg RM18 5.70 5.80"):
+            with self.subTest(line=line):
+                self.assertEqual(structured.parse_line(line), UNREADABLE)
+
+    def test_a_price_inside_a_word_is_not_put_in_the_item_name(self):
+        for line in ("+ bin liners 2x30pcs $5.50 (U.P. $6.40)", "+ rice 5kg RM5each"):
+            with self.subTest(line=line):
+                self.assertEqual(structured.parse_line(line), UNREADABLE)
+
+    def test_a_currency_that_isnt_tracked_is_refused(self):
+        for line in ("+ snacks 3pcs JPY500", "+ snacks 3pcs 500 yen", "? shampoo 400ml €4.50", "+ soap 2pcs ฿120",
+                     "/bought tea 100g HK$30"):
+            with self.subTest(line=line):
+                self.assertEqual(structured.parse_line(line), structured.UNTRACKED_CURRENCY)
+
+    def test_words_like_markers_stay_item_words(self):
+        self.assertEqual(read("+ paper cup 5"), entry("bought", "paper cup", packs(5)))
+        self.assertEqual(read("+ farm eggs 10pcs $4"), entry("bought", "farm eggs", amount(10, "piece"), 4))
+
+    def test_a_used_line_ignores_the_currency_like_any_price(self):
+        self.assertEqual(read("- rice 1"), entry("used", "rice", packs(1)))
+        self.assertIsNone(read("- rice")["currency"])
 
 
 if __name__ == "__main__":

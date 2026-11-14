@@ -11,6 +11,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 
 import claude_api
+import currency
 import matcher
 import structured
 
@@ -108,7 +109,7 @@ TOTAL_REACH = 4  # how many words may lie between the price and the word
 PRICED_ACTIONS = ("bought", "price_check")  # the entries a price can belong to
 
 # Bump when FREE_TEXT_PROMPT changes, so logged results can be tied to a prompt.
-FREE_TEXT_PROMPT_VERSION = 11
+FREE_TEXT_PROMPT_VERSION = 12
 
 # Every field is required (structured outputs limit optional fields); unknowns are null.
 FREE_TEXT_SCHEMA = {
@@ -124,7 +125,9 @@ FREE_TEXT_SCHEMA = {
                     "item_name": {"type": "string"},
                     "base_unit": {"type": "string", "enum": list(BASE_UNITS)},
                     "quantity_text": _NULLABLE_STRING,
-                    "total_price_sgd": _NULLABLE_NUMBER,
+                    "total_price": _NULLABLE_NUMBER,
+                    "currency": _NULLABLE_STRING,
+                    "total_price_home": _NULLABLE_NUMBER,
                     "store": _NULLABLE_STRING,
                     "brand": _NULLABLE_STRING,
                     "adds_to_count": {"type": "boolean"},
@@ -133,7 +136,8 @@ FREE_TEXT_SCHEMA = {
                 },
                 "required": [
                     "action", "item_id", "item_name", "base_unit", "quantity_text",
-                    "total_price_sgd", "store", "brand", "adds_to_count", "expiry_text", "description",
+                    "total_price", "currency", "total_price_home", "store", "brand", "adds_to_count",
+                    "expiry_text", "description",
                 ],
                 "additionalProperties": False,
             },
@@ -172,7 +176,9 @@ Return one event per item per thing that happened. One message can produce sever
 - brand: the brand if one is written in the message ("Mama Lemon", "Darlie"), otherwise null. A name under "Known brands" is a brand wherever it is written in the message, however short or ordinary it looks ("na hair shampoo" is brand "na"). In a stocktake, each line has the brand written on that line.
 - base_unit: "g" for things sold by weight, "ml" for liquids and anything else sold by volume, "roll", "sheet", or "piece" for things sold by count. Go by how the product is sold, not by the container the message names: a jar of jam is still "g" and a bottle of floor cleaner is still "ml". For a known item, use its base unit.
 - quantity_text: the quantity words copied exactly as written, as one continuous piece of the message: "5kg", "35 sticks", "3 x 2L", "pack of 10 rolls", "6 cans". When the number of packs and the size of a pack are written apart, copy the whole stretch from the first to the last, with the words in between ("2 packs toilet paper 10 rolls each"). Don't convert units, multiply or decide what a number counts. If the message gives no quantity for this item, null. For finished, opened_last and still_have, null; "used" always has one.
-- total_price_sgd: the total price written in the message for this event, as a number: "$12.90" -> 12.9, "2 for $9.90" -> 9.9. When a promotional price was paid, use it, not the usual price. Only a total that is written counts. If the message gives just a price per pack ("$3.20 each" for two), or one total covering several different items, null.
+- total_price: the total price written in the message for this event, as a number, in the currency it is written in: "$12.90" -> 12.9, "RM18" -> 18, "2 for $9.90" -> 9.9. When a promotional price was paid, use it, not the usual price. Only a total that is written counts. If the message gives just a price per pack ("$3.20 each" for two), or one total covering several different items, null.
+- currency: the 3-letter code of the currency total_price is written in, read only from the marker written on that amount: "$", "S$", "SGD" or no marker -> "SGD"; "RM" or "MYR" -> "MYR"; "US$" or "USD" -> "USD"; "¥", "RMB", "yuan", "元" or "CNY" -> "CNY"; any other currency, its own code ("JPY", "THB"). Never work it out from the shop or the place: an amount with no marker is "SGD", even in JB. null when total_price is null.
+- total_price_home: when a price in another currency comes with what the same purchase cost in SGD ("RM18, came to $5.70 on my card"), that SGD amount as a number, otherwise null. Never convert a price yourself.
 - store: the shop copied as it is written in the message ("ntuc", "Sheng Siong", "taobao"), otherwise null. Never replace it with another shop or another name for it. A shop named once for a whole shopping trip applies to every item in the message. A shop is never a brand.
 - adds_to_count: true only for a stock_count that adds to what is there ("another 3 bottles", "2 more", "found 3 bottles"); otherwise false.
 - expiry_text: for bought and stock_count, the expiry date copied exactly as written, with the word before it ("expires Jan 2028", "exp 12/27", "best before 31/12/2026"), otherwise null. In a stocktake, each line's own expiry. Never work a date out or change how it is written.
@@ -192,18 +198,24 @@ Known items (id | name | base unit | aliases):
 toilet-paper | Toilet paper | roll | loo roll, TP
 dish-soap | Dishwashing liquid | ml | dish soap
 Message: Got 2 packs of TP from NTUC, 10 rolls each, $12.90. Also grabbed a 1L Mama Lemon for $3.20
-Output: {"events":[{"action":"bought","item_id":"toilet-paper","item_name":"TP","base_unit":"roll","quantity_text":"2 packs of TP from NTUC, 10 rolls each","total_price_sgd":12.9,"store":"NTUC","brand":null,"adds_to_count":false,"expiry_text":null,"description":null},{"action":"bought","item_id":"dish-soap","item_name":"Dishwashing liquid","base_unit":"ml","quantity_text":"1L","total_price_sgd":3.2,"store":"NTUC","brand":"Mama Lemon","adds_to_count":false,"expiry_text":null,"description":null}],"clarify":null}
+Output: {"events":[{"action":"bought","item_id":"toilet-paper","item_name":"TP","base_unit":"roll","quantity_text":"2 packs of TP from NTUC, 10 rolls each","total_price":12.9,"currency":"SGD","total_price_home":null,"store":"NTUC","brand":null,"adds_to_count":false,"expiry_text":null,"description":null},{"action":"bought","item_id":"dish-soap","item_name":"Dishwashing liquid","base_unit":"ml","quantity_text":"1L","total_price":3.2,"currency":"SGD","total_price_home":null,"store":"NTUC","brand":"Mama Lemon","adds_to_count":false,"expiry_text":null,"description":null}],"clarify":null}
 
 Known items (id | name | base unit | aliases):
 (none yet)
 Message: bought Dynamo 3.6kg at Giant for 11.95
-Output: {"events":[{"action":"bought","item_id":null,"item_name":"Laundry detergent","base_unit":"g","quantity_text":"3.6kg","total_price_sgd":11.95,"store":"Giant","brand":"Dynamo","adds_to_count":false,"expiry_text":null,"description":null}],"clarify":null}
+Output: {"events":[{"action":"bought","item_id":null,"item_name":"Laundry detergent","base_unit":"g","quantity_text":"3.6kg","total_price":11.95,"currency":"SGD","total_price_home":null,"store":"Giant","brand":"Dynamo","adds_to_count":false,"expiry_text":null,"description":null}],"clarify":null}
 
 Known items (id | name | base unit | aliases):
 rice | Rice | g |
 shampoo | Shampoo | ml |
 Message: is $7.50 for 5kg Royal Umbrella rice at Sheng Siong ok?
-Output: {"events":[{"action":"price_check","item_id":"rice","item_name":"rice","base_unit":"g","quantity_text":"5kg","total_price_sgd":7.5,"store":"Sheng Siong","brand":"Royal Umbrella","adds_to_count":false,"expiry_text":null,"description":null}],"clarify":null}
+Output: {"events":[{"action":"price_check","item_id":"rice","item_name":"rice","base_unit":"g","quantity_text":"5kg","total_price":7.5,"currency":"SGD","total_price_home":null,"store":"Sheng Siong","brand":"Royal Umbrella","adds_to_count":false,"expiry_text":null,"description":null}],"clarify":null}
+
+Known items (id | name | base unit | aliases):
+cooking-oil | Cooking oil | ml | oil
+rice | Rice | g |
+Message: JB trip: 2L Knife cooking oil RM16.90, paid $5.35 on my card. Also 10kg rice for 1 ringgit cheaper than last time
+Output: {"events":[{"action":"bought","item_id":"cooking-oil","item_name":"cooking oil","base_unit":"ml","quantity_text":"2L","total_price":16.9,"currency":"MYR","total_price_home":5.35,"store":"JB","brand":"Knife","adds_to_count":false,"expiry_text":null,"description":null},{"action":"bought","item_id":"rice","item_name":"rice","base_unit":"g","quantity_text":"10kg","total_price":null,"currency":null,"total_price_home":null,"store":"JB","brand":null,"adds_to_count":false,"expiry_text":null,"description":null}],"clarify":null}
 
 Known items (id | name | base unit | aliases):
 toilet-paper | Toilet paper | roll | loo roll, TP
@@ -214,40 +226,40 @@ Known items (id | name | base unit | aliases):
 body-wash | Body wash | ml | shower gel
 rice | Rice | g |
 Message: shower gel finish
-Output: {"events":[{"action":"finished","item_id":"body-wash","item_name":"shower gel","base_unit":"ml","quantity_text":null,"total_price_sgd":null,"store":null,"brand":null,"adds_to_count":false,"expiry_text":null,"description":null}],"clarify":null}
+Output: {"events":[{"action":"finished","item_id":"body-wash","item_name":"shower gel","base_unit":"ml","quantity_text":null,"total_price":null,"currency":null,"total_price_home":null,"store":null,"brand":null,"adds_to_count":false,"expiry_text":null,"description":null}],"clarify":null}
 
 Known items (id | name | base unit | aliases):
 toilet-paper | Toilet paper | roll | loo roll, TP
 rice | Rice | g |
 Message: the body wash is finished
-Output: {"events":[{"action":"finished","item_id":null,"item_name":"Body wash","base_unit":"ml","quantity_text":null,"total_price_sgd":null,"store":null,"brand":null,"adds_to_count":false,"expiry_text":null,"description":null}],"clarify":null}
+Output: {"events":[{"action":"finished","item_id":null,"item_name":"Body wash","base_unit":"ml","quantity_text":null,"total_price":null,"currency":null,"total_price_home":null,"store":null,"brand":null,"adds_to_count":false,"expiry_text":null,"description":null}],"clarify":null}
 
 Known items (id | name | base unit | aliases):
 hair-conditioner | Hair conditioner | ml | conditioner
 wet-wipes | Wet wipes | piece |
 Message: ordered fabric conditioner 2 bottles 3.10 from taobao
-Output: {"events":[{"action":"bought","item_id":null,"item_name":"Fabric conditioner","base_unit":"ml","quantity_text":"2 bottles","total_price_sgd":3.1,"store":"taobao","brand":null,"adds_to_count":false,"expiry_text":null,"description":null}],"clarify":null}
+Output: {"events":[{"action":"bought","item_id":null,"item_name":"Fabric conditioner","base_unit":"ml","quantity_text":"2 bottles","total_price":3.1,"currency":"SGD","total_price_home":null,"store":"taobao","brand":null,"adds_to_count":false,"expiry_text":null,"description":null}],"clarify":null}
 
 Known items (id | name | base unit | aliases):
 toilet-paper | Toilet paper | roll | loo roll, TP
 rice | Rice | g |
 Message: this is the last bottle of soy sauce, just opened it
-Output: {"events":[{"action":"opened_last","item_id":null,"item_name":"Soy sauce","base_unit":"ml","quantity_text":null,"total_price_sgd":null,"store":null,"brand":null,"adds_to_count":false,"expiry_text":null,"description":null}],"clarify":null}
+Output: {"events":[{"action":"opened_last","item_id":null,"item_name":"Soy sauce","base_unit":"ml","quantity_text":null,"total_price":null,"currency":null,"total_price_home":null,"store":null,"brand":null,"adds_to_count":false,"expiry_text":null,"description":null}],"clarify":null}
 
 Known items (id | name | base unit | aliases):
 (none yet)
 Message: ran out of oyster sauce
-Output: {"events":[{"action":"finished","item_id":null,"item_name":"Oyster sauce","base_unit":"ml","quantity_text":null,"total_price_sgd":null,"store":null,"brand":null,"adds_to_count":false,"expiry_text":null,"description":null}],"clarify":null}
+Output: {"events":[{"action":"finished","item_id":null,"item_name":"Oyster sauce","base_unit":"ml","quantity_text":null,"total_price":null,"currency":null,"total_price_home":null,"store":null,"brand":null,"adds_to_count":false,"expiry_text":null,"description":null}],"clarify":null}
 
 Known items (id | name | base unit | aliases):
 rice | Rice | g |
 Message: counted the storeroom: 6 cans of tuna
-Output: {"events":[{"action":"stock_count","item_id":null,"item_name":"Canned tuna","base_unit":"piece","quantity_text":"6 cans","total_price_sgd":null,"store":null,"brand":null,"adds_to_count":false,"expiry_text":null,"description":null}],"clarify":null}
+Output: {"events":[{"action":"stock_count","item_id":null,"item_name":"Canned tuna","base_unit":"piece","quantity_text":"6 cans","total_price":null,"currency":null,"total_price_home":null,"store":null,"brand":null,"adds_to_count":false,"expiry_text":null,"description":null}],"clarify":null}
 
 Known items (id | name | base unit | aliases):
 kitchen-towel | Kitchen towel | roll | kitchen roll
 Message: used 2 rolls of kitchen towel cleaning up the spill
-Output: {"events":[{"action":"used","item_id":"kitchen-towel","item_name":"kitchen towel","base_unit":"roll","quantity_text":"2 rolls","total_price_sgd":null,"store":null,"brand":null,"adds_to_count":false,"expiry_text":null,"description":null}],"clarify":null}
+Output: {"events":[{"action":"used","item_id":"kitchen-towel","item_name":"kitchen towel","base_unit":"roll","quantity_text":"2 rolls","total_price":null,"currency":null,"total_price_home":null,"store":null,"brand":null,"adds_to_count":false,"expiry_text":null,"description":null}],"clarify":null}
 
 Known items (id | name | base unit | aliases):
 shampoo | Shampoo | ml |
@@ -257,12 +269,12 @@ Output: {"events":[],"clarify":null}
 Known items (id | name | base unit | aliases):
 shampoo | Shampoo | ml |
 Message: 2 bottles of shampoo at $4.50 each from Watsons
-Output: {"events":[{"action":"bought","item_id":"shampoo","item_name":"shampoo","base_unit":"ml","quantity_text":"2 bottles","total_price_sgd":null,"store":"Watsons","brand":null,"adds_to_count":false,"expiry_text":null,"description":null}],"clarify":null}
+Output: {"events":[{"action":"bought","item_id":"shampoo","item_name":"shampoo","base_unit":"ml","quantity_text":"2 bottles","total_price":null,"currency":null,"total_price_home":null,"store":"Watsons","brand":null,"adds_to_count":false,"expiry_text":null,"description":null}],"clarify":null}
 
 Known items (id | name | base unit | aliases):
 rice | Rice | g |
 Message: got bin liners at Giant, 2 packs of 30 pcs for $5.50 (U.P. $6.40)
-Output: {"events":[{"action":"bought","item_id":null,"item_name":"Bin liners","base_unit":"piece","quantity_text":"2 packs of 30 pcs","total_price_sgd":5.5,"store":"Giant","brand":null,"adds_to_count":false,"expiry_text":null,"description":null}],"clarify":null}
+Output: {"events":[{"action":"bought","item_id":null,"item_name":"Bin liners","base_unit":"piece","quantity_text":"2 packs of 30 pcs","total_price":5.5,"currency":"SGD","total_price_home":null,"store":"Giant","brand":null,"adds_to_count":false,"expiry_text":null,"description":null}],"clarify":null}
 
 Known items (id | name | base unit | aliases):
 dish-soap | Dishwashing liquid | ml | dish soap
@@ -274,13 +286,13 @@ Output: {"events":[],"clarify":"What did you finish: the dishwashing liquid, bod
 Known items (id | name | base unit | aliases):
 (none yet)
 Message: Sheng Siong trip: bread and peanut butter, $7.80 altogether
-Output: {"events":[{"action":"bought","item_id":null,"item_name":"Bread","base_unit":"piece","quantity_text":null,"total_price_sgd":null,"store":"Sheng Siong","brand":null,"adds_to_count":false,"expiry_text":null,"description":null},{"action":"bought","item_id":null,"item_name":"Peanut butter","base_unit":"g","quantity_text":null,"total_price_sgd":null,"store":"Sheng Siong","brand":null,"adds_to_count":false,"expiry_text":null,"description":null}],"clarify":null}
+Output: {"events":[{"action":"bought","item_id":null,"item_name":"Bread","base_unit":"piece","quantity_text":null,"total_price":null,"currency":null,"total_price_home":null,"store":"Sheng Siong","brand":null,"adds_to_count":false,"expiry_text":null,"description":null},{"action":"bought","item_id":null,"item_name":"Peanut butter","base_unit":"g","quantity_text":null,"total_price":null,"currency":null,"total_price_home":null,"store":"Sheng Siong","brand":null,"adds_to_count":false,"expiry_text":null,"description":null}],"clarify":null}
 
 Known items (id | name | base unit | aliases):
 rice | Rice | g |
 toilet-paper | Toilet paper | roll | loo roll, TP
 Message: there's a lot of rice left, enough for the month
-Output: {"events":[{"action":"still_have","item_id":"rice","item_name":"rice","base_unit":"g","quantity_text":null,"total_price_sgd":null,"store":null,"brand":null,"adds_to_count":false,"expiry_text":null,"description":null}],"clarify":null}
+Output: {"events":[{"action":"still_have","item_id":"rice","item_name":"rice","base_unit":"g","quantity_text":null,"total_price":null,"currency":null,"total_price_home":null,"store":null,"brand":null,"adds_to_count":false,"expiry_text":null,"description":null}],"clarify":null}
 
 Known items (id | name | base unit | aliases):
 hand-wash | Hand wash | g |
@@ -288,12 +300,12 @@ shampoo | Shampoo | ml |
 Message: Hand wash stock take
 4 bottles 400ml Lux white tea expires July 2028
 1 bottle Dettol 250ml
-Output: {"events":[{"action":"stock_count","item_id":"hand-wash","item_name":"Hand wash","base_unit":"g","quantity_text":"4 bottles 400ml","total_price_sgd":null,"store":null,"brand":"Lux","adds_to_count":false,"expiry_text":"expires July 2028","description":"white tea"},{"action":"stock_count","item_id":"hand-wash","item_name":"Hand wash","base_unit":"g","quantity_text":"1 bottle Dettol 250ml","total_price_sgd":null,"store":null,"brand":"Dettol","adds_to_count":false,"expiry_text":null,"description":null}],"clarify":null}
+Output: {"events":[{"action":"stock_count","item_id":"hand-wash","item_name":"Hand wash","base_unit":"g","quantity_text":"4 bottles 400ml","total_price":null,"currency":null,"total_price_home":null,"store":null,"brand":"Lux","adds_to_count":false,"expiry_text":"expires July 2028","description":"white tea"},{"action":"stock_count","item_id":"hand-wash","item_name":"Hand wash","base_unit":"g","quantity_text":"1 bottle Dettol 250ml","total_price":null,"currency":null,"total_price_home":null,"store":null,"brand":"Dettol","adds_to_count":false,"expiry_text":null,"description":null}],"clarify":null}
 
 Known items (id | name | base unit | aliases):
 hand-wash | Hand wash | g |
 Message: I have another 3 bottles of Lux hand wash, 400g each
-Output: {"events":[{"action":"stock_count","item_id":"hand-wash","item_name":"hand wash","base_unit":"g","quantity_text":"3 bottles of Lux hand wash, 400g each","total_price_sgd":null,"store":null,"brand":"Lux","adds_to_count":true,"expiry_text":null,"description":null}],"clarify":null}
+Output: {"events":[{"action":"stock_count","item_id":"hand-wash","item_name":"hand wash","base_unit":"g","quantity_text":"3 bottles of Lux hand wash, 400g each","total_price":null,"currency":null,"total_price_home":null,"store":null,"brand":"Lux","adds_to_count":true,"expiry_text":null,"description":null}],"clarify":null}
 
 Known items (id | name | base unit | aliases):
 rice | Rice | g |
@@ -350,8 +362,8 @@ def normalise_free_text(data, known_ids):
     """Clean the model's output into (events, clarify).
 
     Events come back with keys: action, item_id, item_name, base_unit,
-    quantity_text, total_price, store, brand, adds (a count that adds to an earlier one), expiry_text,
-    description.
+    quantity_text, total_price, currency, total_price_home, store, brand, adds (a
+    count that adds to an earlier one), expiry_text, description.
     """
     events = []
     raw_events = data.get("events") if isinstance(data, dict) else None
@@ -371,7 +383,9 @@ def ground_free_text(events, text, stores=(), units=None, brands=()) -> list:
     can read them, and the date applies to the whole text. A store, price or quantity the model gave that isn't written in the
     text is dropped and named in the entry's "missed", so the reply can say so.
     A total for several items (see shared_totals) is dropped too. The quantity
-    words are then read by the format's own rules.
+    words are then read by the format's own rules. A price's currency is the one
+    written on it (see _written_currency), and a price in a currency that isn't
+    tracked is dropped, with the currency in the entry's "untracked_currency".
     """
     stores_read = [
         found for line in text.splitlines() if (found := structured.find_store(line, stores))[0]
@@ -379,19 +393,35 @@ def ground_free_text(events, text, stores=(), units=None, brands=()) -> list:
     # A price counts once for each time it is written: one total put on three items backs none of them.
     # An expiry isn't the day something was bought ("expires on 31/12/2026"), so it is taken out first.
     without_date, on = structured.split_date(structured.strip_expiries(text))
-    written = Counter(round(number, 2) for number in structured.numbers_in(without_date))
+    money = currency.money_in(without_date)
+    written = Counter(round(amount, 2) for amount, _ in money)
+    marks = {}  # each amount -> the currencies it is written in, None for no marker
+    for amount, code in money:
+        marks.setdefault(round(amount, 2), set()).add(code)
+    # An SGD value only uses up a written price beside a foreign one; next to an SGD price it is a repeat.
     used = Counter(round(event["total_price"], 2) for event in events if event["total_price"] is not None)
+    used.update(round(event["total_price_home"], 2) for event in events
+                if event.get("total_price_home") is not None and event.get("currency") not in (None, currency.home()))
     shared = shared_totals(events, text)
     entries = []
     for event in events:
         missed = []
         store, store_is_new = _grounded_store(event["store"], text, stores_read, stores, missed)
-        price = event["total_price"]
+        price, paid_in, untracked = event["total_price"], None, None
         if price is not None and round(price, 2) in shared:
             price = None  # not "missed": the reply says once that the total covers several items
         elif price is not None and not 0 < used[round(price, 2)] <= written[round(price, 2)]:
             price = None
             missed.append("price")
+        if price is not None:
+            paid_in = _written_currency(price, event.get("currency"), marks)
+            if paid_in is None:
+                price = None
+                missed.append("price")
+            elif not currency.is_tracked(paid_in):
+                price, paid_in, untracked = None, None, paid_in
+        price_home = _grounded_home_price(event.get("total_price_home"), price, paid_in, written, used, marks,
+                                          missed)
         quantity = None
         if event["quantity_text"]:
             if _quoted_from(event["quantity_text"], text):
@@ -417,6 +447,9 @@ def ground_free_text(events, text, stores=(), units=None, brands=()) -> list:
             "base_unit": event["base_unit"],
             "quantity": quantity,
             "total_price": price,
+            "currency": paid_in,
+            "total_price_home": price_home,
+            "untracked_currency": untracked,
             "store": store,
             "store_is_new": store_is_new,
             "on": on,
@@ -429,6 +462,44 @@ def ground_free_text(events, text, stores=(), units=None, brands=()) -> list:
             "free_text": True,
         })
     return entries
+
+
+def _written_currency(amount, named, marks):
+    """The currency a price the model gave is written in, or None if that can't be told from the message.
+
+    marks maps each amount written in the message to the currencies it is
+    written with (None for no marker). The marker on the amount decides, not the
+    model. An amount with no marker is in the base currency, so a model that
+    names another for it has worked that out, and the price isn't used. Only
+    when one amount is written in two currencies does the model's pick count.
+    """
+    found = marks.get(round(amount, 2), set())
+    home = currency.home()
+    if named is not None and named in found:
+        return named
+    if None in found and named in (None, home):
+        return home
+    marked = found - {None}
+    if len(marked) == 1 and None not in found:
+        return marked.pop()   # "RM18" that the model called SGD: the marker is right
+    return None
+
+
+def _grounded_home_price(amount, price, paid_in, written, used, marks, missed):
+    """The base-currency price written beside a foreign one, or None.
+
+    Only next to a foreign price, and only if it is written in the message in the
+    base currency (with "$", "S$" or "SGD", or with no marker). Without it, the
+    entry is converted at the day's rate instead, so a dropped one is only noted.
+    """
+    home = currency.home()
+    if amount is None or price is None or paid_in == home:
+        return None
+    key = round(amount, 2)
+    if 0 < used[key] <= written[key] and marks.get(key, set()) & {home, None}:
+        return amount
+    missed.append(f"{home} price")
+    return None
 
 
 def shared_totals(events, text) -> list:
@@ -606,13 +677,26 @@ def _normalise_event(raw, known_ids):
         "item_name": name[:MAX_NAME_LENGTH].strip(),
         "base_unit": base_unit if base_unit in BASE_UNITS else "piece",
         "quantity_text": _text(raw.get("quantity_text")),
-        "total_price": _positive(raw.get("total_price_sgd")),
+        "total_price": _positive(raw.get("total_price")),
+        "currency": _currency_code(raw.get("currency")),
+        "total_price_home": _positive(raw.get("total_price_home")),
         "store": _text(raw.get("store")),
         "brand": _text(raw.get("brand")),
         "adds": action == "stock_count" and raw.get("adds_to_count") is True,
         "expiry_text": _text(raw.get("expiry_text")),
         "description": (_text(raw.get("description")) or "")[:MAX_DESCRIPTION_LENGTH].strip() or None,
     }
+
+
+def _currency_code(value):
+    """The model's currency as a code: "MYR", or "RM" read as MYR. None for anything that isn't one."""
+    written = _text(value)
+    if not written:
+        return None
+    code = currency.code_for(written)
+    if code:
+        return code
+    return written.upper() if re.fullmatch(r"[A-Za-z]{3}", written) else None
 
 
 def _positive(value):

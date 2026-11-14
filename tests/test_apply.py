@@ -13,6 +13,7 @@ import apply
 import claude_api
 import model
 import pricing
+import rates
 import replies
 import store
 import structured
@@ -810,6 +811,124 @@ class PriceVerdictTest(ApplyTestCase):
         self.ai_says(name="Hand masks", base_unit="piece")
         lines = self.lines("+ hand masks 10 pcs $1.45 @taobao")
         self.assertEqual(lines, ["✓ Hand masks (new item): bought 10 pieces for $1.45 at Taobao ($0.14/piece). First price recorded."])
+
+
+class CurrencyEntryTest(ApplyTestCase):
+    """Prices in other currencies (PLAN.md §8.5). AT is 6pm on 9 Oct 2026 in Singapore."""
+
+    RATES = {"CNY": {"rate": 5.1901, "date": "2026-10-09"}, "MYR": {"rate": 3.1744, "date": "2026-10-09"},
+             "USD": {"rate": 0.77888, "date": "2026-10-09"}}
+
+    def setUp(self):
+        super().setUp()
+        self.add_item("rice", "Rice", "g")
+        fetch = mock.patch.object(rates, "fetch_rates", return_value=self.RATES)
+        self.fetch = fetch.start()
+        self.addCleanup(fetch.stop)
+
+    def test_a_foreign_price_is_kept_in_its_currency_with_its_sgd_value_at_the_days_rate(self):
+        lines, counts, _ = self.send("+ rice 5kg RM18 @lotus")
+        event, = self.events("rice")
+        self.assertEqual({key: event.get(key) for key in (
+            "total_price", "unit_price", "currency", "home_currency", "fx_to_home", "fx_date", "fx_source",
+            "total_price_home", "unit_price_home")}, {
+            "total_price": 18, "unit_price": 0.0036, "currency": "MYR", "home_currency": "SGD",
+            "fx_to_home": 0.31502, "fx_date": "2026-10-09", "fx_source": "frankfurter",
+            "total_price_home": 5.67, "unit_price_home": 0.001134,
+        })
+        self.assertEqual(lines, ["✓ Rice: bought 5 kg for RM18.00 (≈ $5.67) at Lotus (RM0.36/100 g). "
+                                 "First MYR price recorded. In SGD: $0.11/100 g. No SGD price to compare with yet. "
+                                 "Rate RM1 = $0.315 (9 Oct)."])
+        self.assertEqual(counts, {"lines_structured": 1})   # no AI
+        self.fetch.assert_called_once_with(date(2026, 10, 9), date(2026, 10, 9))
+
+    def test_the_days_rate_is_fetched_once_and_then_read_from_the_table(self):
+        self.send("+ rice 5kg RM18 @lotus\n+ rice 10kg RM34 @lotus", update_id=1)
+        self.send("+ rice 5kg ¥40 @taobao", update_id=2)
+        self.assertEqual(self.fetch.call_count, 1)
+        self.assertEqual([event["fx_to_home"] for event in self.events("rice")], [0.31502, 0.31502, 0.192675])
+
+    def test_an_sgd_price_written_beside_it_is_used_as_written(self):
+        lines = self.lines("+ rice 5kg RM18 ($5.70) @lotus")
+        event, = self.events("rice")
+        self.assertEqual((event["total_price"], event["currency"], event["total_price_home"], event["fx_to_home"],
+                          event["fx_source"], event["fx_date"], event["unit_price_home"]),
+                         (18, "MYR", 5.7, 0.316667, "written", "2026-10-09", 0.00114))
+        self.assertIn("for RM18.00 ($5.70) at Lotus", lines[0])
+        self.assertTrue(lines[0].endswith("Rate RM1 = $0.317, from your two prices."))
+        self.fetch.assert_not_called()
+
+    def test_the_sgd_price_beside_it_needs_no_dollar_sign(self):
+        lines = self.lines("+ rice 5kg RM18 5.70 @lotus")
+        event, = self.events("rice")
+        self.assertEqual((event["total_price"], event["currency"], event["total_price_home"], event["fx_source"]),
+                         (18, "MYR", 5.7, "written"))
+        self.assertTrue(lines[0].endswith("Rate RM1 = $0.317, from your two prices."))
+        self.fetch.assert_not_called()
+
+    def test_it_is_set_against_the_best_sgd_price(self):
+        self.send("+ rice 5kg $12 @ntuc", update_id=1)
+        lines = self.lines("+ rice 5kg RM18 @lotus", update_id=2)
+        self.assertIn("First MYR price recorded. In SGD: $0.11/100 g, less than half your best SGD price "
+                      "($0.24/100 g at FairPrice).", lines[0])
+
+    def test_it_is_judged_against_earlier_prices_in_its_own_currency(self):
+        self.send("+ rice 5kg $5 @ntuc", update_id=1)
+        self.send("+ rice 5kg RM20 @lotus", update_id=2)
+        lines = self.lines("? rice 5kg RM16 @lotus", update_id=3)
+        self.assertEqual(lines, ["Rice: RM16.00 (≈ $5.04) for 5 kg = RM0.32/100 g at Lotus. Price noted. "
+                                 "🔥 Best MYR price yet. It was RM0.40/100 g at Lotus. "
+                                 "In SGD: $0.10/100 g, about the same as your best SGD price ($0.10/100 g at FairPrice). "
+                                 "Rate RM1 = $0.315 (9 Oct)."])
+
+    def test_an_sgd_price_is_still_compared_with_sgd_prices_only(self):
+        self.send("+ rice 5kg RM10 @lotus", update_id=1)
+        self.assertIn("First price recorded.", self.lines("+ rice 5kg $12 @ntuc", update_id=2)[0])
+
+    def test_with_no_rate_to_be_had_it_is_compared_in_its_own_currency_only(self):
+        self.fetch.return_value = {}
+        lines = self.lines("+ rice 5kg RM18 @lotus")
+        event, = self.events("rice")
+        self.assertEqual((event["currency"], event["total_price"]), ("MYR", 18))
+        for key in ("fx_to_home", "fx_date", "fx_source", "total_price_home", "unit_price_home"):
+            self.assertNotIn(key, event)
+        self.assertEqual(lines, ["✓ Rice: bought 5 kg for RM18.00 at Lotus (RM0.36/100 g). First MYR price recorded. "
+                                 "No MYR rate to hand, so this is compared in MYR only."])
+
+    def test_an_old_receipt_gets_that_days_rate(self):
+        self.fetch.return_value = {"MYR": {"rate": 3.2091, "date": "2026-09-15"}}
+        self.send("+ rice 5kg RM18 @lotus on 15/09/2026")
+        event, = self.events("rice")
+        self.assertEqual((event["fx_to_home"], event["fx_date"]), (0.311614, "2026-09-15"))
+        self.fetch.assert_called_once_with(date(2026, 9, 15), date(2026, 10, 9))
+
+    def test_every_entry_stores_the_base_currency_and_sgd_ones_need_no_rate(self):
+        self.send("+ rice 5kg $12 @ntuc\n- rice 1kg")
+        bought, used = self.events("rice")
+        self.assertEqual((bought["currency"], bought["home_currency"], used["currency"], used["home_currency"]),
+                         ("SGD", "SGD", "SGD", "SGD"))
+        self.assertNotIn("fx_to_home", bought)
+        self.fetch.assert_not_called()
+
+    def test_free_text_with_both_prices(self):
+        text = "got 2 bottles of shampoo in JB for RM25.90, about $8.10 on the card"
+        self.add_item("shampoo", "Shampoo", "ml", pack_size=400)
+        lines, _, _ = self.said(text, {"item_id": "shampoo", "item_name": "shampoo", "base_unit": "ml",
+                                       "quantity_text": "2 bottles", "total_price": 25.9, "currency": "MYR",
+                                       "total_price_home": 8.1})
+        event, = self.events("shampoo")
+        self.assertEqual((event["currency"], event["total_price"], event["total_price_home"], event["fx_source"]),
+                         ("MYR", 25.9, 8.1, "written"))
+        self.assertIn("for RM25.90 ($8.10)", lines[0])
+        self.fetch.assert_not_called()
+
+    def test_free_text_in_a_currency_that_isnt_tracked_keeps_the_entry_without_its_price(self):
+        lines, _, _ = self.said("bought 5kg rice in Tokyo for 3000 yen",
+                                {"item_id": "rice", "item_name": "rice", "base_unit": "g", "quantity_text": "5kg",
+                                 "total_price": 3000, "currency": "JPY"})
+        event, = self.events("rice")
+        self.assertEqual((event.get("total_price"), event["currency"], event["qty"]), (None, "SGD", 5000))
+        self.assertEqual(lines, ["✓ Rice: bought 5 kg. (I don't track JPY prices yet, so the price isn't recorded.)"])
 
 
 class DatedEntryTest(ApplyTestCase):

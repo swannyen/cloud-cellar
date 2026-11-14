@@ -18,7 +18,9 @@ def raw_event(**fields):
         "item_name": "TP",
         "base_unit": "roll",
         "quantity_text": "2 packs of 10 rolls",
-        "total_price_sgd": 12.9,
+        "total_price": 12.9,
+        "currency": "SGD",
+        "total_price_home": None,
         "store": "FairPrice",
         "brand": None,
     }
@@ -40,6 +42,8 @@ class NormaliseTest(unittest.TestCase):
             "base_unit": "roll",
             "quantity_text": "2 packs of 10 rolls",
             "total_price": 12.9,
+            "currency": "SGD",
+            "total_price_home": None,
             "store": "FairPrice",
             "brand": None,
             "adds": False,
@@ -72,7 +76,7 @@ class NormaliseTest(unittest.TestCase):
     def test_non_positive_and_non_numeric_prices_become_unknown(self):
         for bad in (0, -1, "2", True, float("nan"), float("inf")):
             with self.subTest(bad=bad):
-                self.assertIsNone(normalise_one(total_price_sgd=bad)["total_price"])
+                self.assertIsNone(normalise_one(total_price=bad)["total_price"])
 
     def test_quantity_text_is_kept_as_written_for_the_code_to_read(self):
         self.assertEqual(normalise_one(quantity_text=" 2 sticks ")["quantity_text"], "2 sticks")

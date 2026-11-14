@@ -24,7 +24,9 @@ An expected event names "action" and either "item_id" (a known item) or "new"
 "base_unit"). The quantity is "qty" (a total in base units, when the message
 gives sizes), "packs" (a count of packs, bottles, bags and the like), "count"
 (a number that doesn't say what it counts, which the bot asks about), or left
-out (no quantity). Other fields left out are expected to be null. A value of {"any": [...]} accepts any
+out (no quantity). A price's "currency" is SGD unless the fixture names another, and
+"total_price_home" is an SGD price written beside a foreign one. Other fields left
+out are expected to be null. A value of {"any": [...]} accepts any
 of the listed values. An optional "known" lists the item IDs the bot knows for
 that message (default: all of them), which is how the "product the bot has
 never seen" cases are written.
@@ -54,7 +56,7 @@ import structured  # noqa: E402
 
 DEFAULT_FIXTURES = ROOT / "tests" / "fixtures" / "freetext.jsonl"
 TODAY = date(2026, 10, 9)  # fixed, so every run sends the same prompt
-FIELDS = ("action", "item", "base_unit", "quantity", "total_price", "store", "brand")
+FIELDS = ("action", "item", "base_unit", "quantity", "total_price", "currency", "total_price_home", "store", "brand")
 TARGET_CORRECT = 0.90
 # Claude Haiku 5.5, US$ per million tokens (prompts up to 100K tokens).
 PRICE_IN, PRICE_OUT = 0.10, 0.50
@@ -136,6 +138,10 @@ def _compare(want, got) -> dict:
         "base_unit": unit_ok,
         "quantity": _same_quantity(want, got["quantity"]),
         "total_price": _matches(want.get("total_price"), got["total_price"], _same_number),
+        # Only a recorded price has a currency.
+        "currency": (_matches(want.get("currency", "SGD"), got.get("currency"), operator.eq)
+                     if got["total_price"] is not None else got.get("currency") is None),
+        "total_price_home": _matches(want.get("total_price_home"), got.get("total_price_home"), _same_number),
         "store": _matches(want.get("store"), got["store"], _same_text),
         "brand": _matches(want.get("brand"), got["brand"], _same_text),
     }
@@ -197,6 +203,8 @@ def oracle_output(fixture, items):
             "base_unit": _first(want.get("base_unit")) or units[item_id],
             "quantity": quantity,
             "total_price": _first(want.get("total_price")),
+            "currency": want.get("currency", "SGD") if _first(want.get("total_price")) is not None else None,
+            "total_price_home": _first(want.get("total_price_home")),
             "store": _first(want.get("store")),
             "brand": _first(want.get("brand")),
             "missed": (),
@@ -316,7 +324,8 @@ def report(results, fixtures, reps):
             print(f"    {problem}")
         print(f"    model:    {json.dumps(parsed.events, ensure_ascii=False)}"
               + (f" clarify={parsed.clarify!r}" if parsed.clarify else ""))
-        shown = [{key: entry[key] for key in ("item_id", "phrase", "quantity", "total_price", "store", "missed")}
+        shown = [{key: entry.get(key) for key in ("item_id", "phrase", "quantity", "total_price", "currency",
+                                                  "total_price_home", "store", "missed")}
                  for entry in entries]
         print(f"    recorded: {json.dumps(shown, ensure_ascii=False)}")
     for error in results.errors:

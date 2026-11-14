@@ -9,6 +9,7 @@ import ai
 import apply
 import commands
 import matcher
+import rates
 import replies
 import store
 
@@ -51,7 +52,7 @@ class SimpleCommandTest(CommandTestCase):
         self.assertEqual(commands.handle("/start@bettynuffbot", MEI, NOW), replies.HELP)
 
     def test_commands_from_later_phases_say_so(self):
-        for command in ("/status", "/fx MYR", "/expiring"):
+        for command in ("/status", "/expiring"):
             self.assertEqual(commands.handle(command, MEI, NOW), replies.NOT_AVAILABLE_YET)
 
     def test_unknown_command_stays_silent(self):
@@ -661,16 +662,21 @@ class PriceCommandTest(CommandTestCase):
         })
         self.assertIn("Best: $0.50/roll at Giant, 8 Oct", self.price())
 
-    def test_another_currency_is_noted_and_not_compared(self):
+    def test_another_currency_is_listed_on_its_own(self):
         self.record("+ toilet paper 2x10 $12.90 @fairprice")
+        # Logged before Phase 4 stored SGD values: listed in MYR, with no SGD value to compare by.
         store.put_event("toilet-paper", "2026-10-08T10:00:00Z#1#0", {
             "action": "bought", "qty": 10, "total_price": 1.0, "unit_price": 0.1, "currency": "MYR",
             "store": "Lotus", "at": "2026-10-08T10:00:00Z",
         })
         said = self.price()
-        self.assertIn("Best: $0.65/roll at FairPrice", said)
-        self.assertNotIn("Lotus", said)
-        self.assertTrue(said.endswith("Also logged in MYR. I don't compare those yet."))
+        self.assertEqual(said.split("\nIn MYR:\n")[1], "\n".join([
+            "Best: RM0.10/roll at Lotus, 8 Oct",
+            "Latest:",
+            "• 8 Oct: RM0.10/roll at Lotus, paid",
+        ]))
+        self.assertIn("Best: $0.65/roll at FairPrice", said.split("In MYR")[0])
+        self.assertNotIn("Cheapest anywhere", said)
 
     def test_a_close_spelling_or_another_name_is_enough(self):
         self.record("+ toilet paper 2x10 $12.90")
@@ -685,6 +691,52 @@ class PriceCommandTest(CommandTestCase):
 
     def test_help_mentions_it(self):
         self.assertIn("/price", replies.HELP)
+
+
+class CurrencyCommandTest(CommandTestCase):
+    """/price with prices in other currencies (PLAN.md §8.5). There is no /fx: rates are only fetched."""
+
+    RATES = {"CNY": {"rate": 5.1901, "date": "2026-10-09"}, "MYR": {"rate": 3.1744, "date": "2026-10-09"},
+             "USD": {"rate": 0.77888, "date": "2026-10-09"}}
+
+    def setUp(self):
+        super().setUp()
+        self.add_item("rice", "Rice", "g")
+        fetch = mock.patch.object(rates, "fetch_rates", return_value=self.RATES)
+        self.fetch = fetch.start()
+        self.addCleanup(fetch.stop)
+
+    def test_fx_is_not_a_command(self):
+        for text in ("/fx", "/fx MYR", "/fx MYR 0.31", "/fx MYR auto"):
+            with self.subTest(text=text):
+                self.assertIsNone(commands.handle(text, MEI, NOW))
+        self.assertEqual(store.list_fx(), [])
+        self.assertNotIn("/fx", replies.HELP)
+
+    def test_price_lists_each_currency_and_the_cheapest_anywhere(self):
+        self.record("+ rice 5kg $12 @ntuc", update_id=1, at="2026-10-05T04:00:00Z")
+        self.record("+ rice 5kg RM18 @lotus", update_id=2)
+        self.record("+ rice 5kg ¥40 ($7.80) @taobao", update_id=3)
+        self.assertEqual(commands.handle("/price rice", MEI, NOW), "\n".join([
+            "Rice: prices over the last 12 months",
+            "Best: $0.24/100 g at FairPrice, 5 Oct",
+            "Latest:",
+            "• 5 Oct: $0.24/100 g at FairPrice, paid",
+            "In CNY:",
+            "Best: ¥0.80/100 g at Taobao, 9 Oct (≈ $0.16/100 g)",
+            "Latest:",
+            "• 9 Oct: ¥0.80/100 g at Taobao (≈ $0.16/100 g), paid",
+            "In MYR:",
+            "Best: RM0.36/100 g at Lotus, 9 Oct (≈ $0.11/100 g)",
+            "Latest:",
+            "• 9 Oct: RM0.36/100 g at Lotus (≈ $0.11/100 g), paid",
+            "Cheapest anywhere, in SGD: RM0.36/100 g at Lotus, 9 Oct (≈ $0.11/100 g)",
+        ]))
+
+    def test_price_with_only_foreign_prices(self):
+        self.record("+ rice 5kg RM18 @lotus")
+        said = commands.handle("/price rice", MEI, NOW)
+        self.assertTrue(said.startswith("Rice: prices over the last 12 months\nNo SGD prices.\nIn MYR:\n"))
 
 
 class DatedEntryCommandTest(CommandTestCase):

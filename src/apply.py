@@ -11,9 +11,11 @@ from datetime import datetime, timedelta, timezone
 import ai
 import claude_api
 import config
+import currency
 import matcher
 import model
 import pricing
+import rates
 import replies
 import store
 import structured
@@ -47,6 +49,7 @@ def apply_entries(entries, *, items, sender, update_id, at, brands=()) -> tuple:
     read, or for a line in the format whose expiry isn't a real date.
     """
     lines, buttons, counts = [], [], Counter()
+    rate_book = rates.RateBook(today=_sgt_day(at))   # exchange rates, looked up only if an entry needs one
     for index, entry in enumerate(entries):
         entry = dict(entry)  # resolving may take a brand off the phrase
         free_text = entry.get("free_text", False)
@@ -104,7 +107,9 @@ def apply_entries(entries, *, items, sender, update_id, at, brands=()) -> tuple:
         if not free_text:
             counts["lines_structured"] += 1
         record = _event_record(entry, amount, sender, happened, at, how, expires_on)
-        verdict = _price_verdict(item, record)  # before the entry is written, so it only meets earlier prices
+        _add_home_price(record, entry, rate_book)
+        # Before the entry is written, so it only meets earlier prices.
+        verdict, in_home = _price_verdict(item, record)
         # The index keeps two events for one item in one message from overwriting each other.
         sk = f"{happened}#{update_id}#{index}"
         store.put_event(item["item_id"], sk, record)
@@ -117,6 +122,7 @@ def apply_entries(entries, *, items, sender, update_id, at, brands=()) -> tuple:
         lines.append(replies.event_line(
             item, record, created=how == "new", read_from=guessed, missed=entry.get("missed", ()), verdict=verdict,
             already_counted=bool(old_purchase) and item.get("stock_est") == stock_before,
+            in_home=in_home, untracked=entry.get("untracked_currency"),
         ))
         if guessed:
             # A wrong guess is put right with one tap: see confirm_same and split_into_new_item.
@@ -345,12 +351,15 @@ def _typed_unit(entry):
 
 def _event_record(entry, amount, sender, happened, sent_at, how, expires_on=None) -> dict:
     total_price = round(entry["total_price"], 2) if entry["total_price"] else None
+    home = config.home_currency()
     return {
         "action": entry["action"],
         **amount,
         "total_price": total_price,
         "unit_price": round(total_price / amount["qty"], 6) if total_price and amount["qty"] else None,
-        "currency": config.home_currency(),
+        # What the price was paid in (the base currency when there is none), and the base currency itself.
+        "currency": (entry.get("currency") or home) if total_price else home,
+        "home_currency": home,
         "store": entry["store"],
         "brand": entry.get("brand"),
         "adds": True if entry.get("adds") else None,  # "I have another 3": added to the count, not a new count
@@ -367,12 +376,49 @@ def _event_record(entry, amount, sender, happened, sent_at, how, expires_on=None
     }
 
 
+def _add_home_price(record, entry, rate_book):
+    """Put a foreign price into the base currency (PLAN.md §8.5), on the record.
+
+    An SGD price written beside it is used as written. Otherwise the rate comes
+    from rate_book, for the day the entry happened. With no rate to be had, the
+    record keeps only its own currency's price.
+    """
+    total = record["total_price"]
+    if not total or record["currency"] == record["home_currency"]:
+        return
+    day = _sgt_day(record["at"])
+    written = entry.get("total_price_home")
+    if written:
+        home_total = written
+        rate = {"fx_to_home": currency.rate_figure(written / total), "fx_date": day.isoformat(),
+                "fx_source": rates.WRITTEN}
+    else:
+        rate = rate_book.rate(record["currency"], day)
+        if rate is None:
+            return
+        home_total = total * rate["fx_to_home"]
+    record.update(rate)
+    record["total_price_home"] = round(home_total, 2)
+    record["unit_price_home"] = round(home_total / record["qty"], 6) if record["qty"] else None
+
+
 def _price_verdict(item, record):
-    """How the entry's price compares with the item's earlier ones, or None if it has no price to compare."""
+    """How the entry's price compares with the item's earlier ones: (verdict, in_home).
+
+    verdict is against earlier prices in the same currency, or None if there is no
+    unit price to compare. in_home is pricing.home_comparison, for a foreign price.
+    """
     if record["action"] not in pricing.PRICED_ACTIONS or not record["unit_price"]:
-        return None
+        return None, None
     events = store.list_events(item["item_id"])
-    return pricing.verdict(record["unit_price"], pricing.price_points(events, epoch(record["at"]), record["currency"]))
+    now = epoch(record["at"])
+    verdict = pricing.verdict(record["unit_price"], pricing.price_points(events, now, record["currency"]))
+    return verdict, pricing.home_comparison(record, events, now)
+
+
+def _sgt_day(iso):
+    """The Singapore date of an ISO UTC time."""
+    return datetime.fromtimestamp(epoch(iso), SGT).date()
 
 
 def _parse_path(entry, how) -> str:

@@ -4,6 +4,7 @@ Phase 1a: /listitems, /list, /items, /undo, /alias, /rename, /set, /unit, /brand
 /help, /ping.
 Phase 2: /price.
 Brought forward from Phase 5: /use (what to use next, by expiry date).
+Phase 4: /price by currency.
 (/add, /bought, /used and /stocktake are entries, not commands: handler.py sends them through the format parser.)
 """
 import re
@@ -20,7 +21,7 @@ import structured
 
 UNDO_WINDOW_SECONDS = 24 * 60 * 60
 MAX_BRAND_LENGTH = 30
-LATER_PHASES = ("/status", "/fx", "/expiring")
+LATER_PHASES = ("/status", "/expiring")
 
 
 def handle(text, sender, now):
@@ -167,7 +168,8 @@ def _price(args, now) -> str:
     if item is None:
         return replies.unknown_item(target)
     events = store.list_events(item["item_id"])
-    return replies.price_book(item, pricing.price_points(events, now), pricing.other_currencies(events))
+    by_currency = [(code, pricing.price_points(events, now, code)) for code in pricing.currencies(events)]
+    return replies.price_book(item, by_currency, pricing.cheapest_anywhere(events, now))
 
 
 def _rename(args) -> str:

@@ -1,6 +1,8 @@
 """Message text the bot sends (PLAN.md §4.4)."""
 from datetime import date, datetime
 
+import config
+import currency
 import model
 import pricing
 import structured
@@ -31,7 +33,9 @@ How much:
 2, 2pkt, 2 boxes — packs, once I know the pack size. If I don't, I ask instead of guessing.
 
 Price and store:
-$12.90 or a plain 12.90 is the total paid.
+$12.90 or a plain 12.90 is the total paid, in SGD.
+Other currencies: RM12.90, US$12.90, ¥12.90 or 12.90 yuan.
+Add what it cost in SGD if you know it: + rice 5kg RM18 5.70 @lotus. Otherwise I use the day's rate.
 The store goes last: @giant, or from/at a store I already know, or just the name of one I know: $12.90 taobao.
 
 Counting a cupboard? Send it in as many lines or messages as you like.
@@ -100,14 +104,17 @@ _KEYWORDS = {"bought": "+", "used": "-", "stock_count": "have", "price_check": "
 LATEST_PRICES = 5
 
 
-def event_line(item, event, created=False, read_from=None, missed=(), verdict=None, already_counted=False) -> str:
+def event_line(item, event, created=False, read_from=None, missed=(), verdict=None, already_counted=False,
+               in_home=None, untracked=None) -> str:
     """The one-line confirmation for a recorded event.
 
     read_from is the sender's phrase when the item was a guess (a close spelling or
     the AI's match). missed names what the AI gave that wasn't in the message.
-    verdict is pricing.verdict, for an entry with a price to compare.
+    verdict is pricing.verdict, for an entry with a price to compare, and in_home
+    pricing.home_comparison, for a foreign price with a base-currency value.
     already_counted is for a purchase dated before a count or a run-out, which
-    is why it leaves the stock as it was.
+    is why it leaves the stock as it was. untracked is a currency the price was
+    in that isn't tracked, so the price was left out.
     """
     text = describe(item, event, name_suffix=" (new item)" if created else "")
     if event["action"] in ("finished", "opened_last") and event.get("brand") and item.get("stock_est"):
@@ -122,7 +129,14 @@ def event_line(item, event, created=False, read_from=None, missed=(), verdict=No
     notes = f' (Read "{read_from}" as {item["name"]}.)' if read_from else ""
     notes += f" (Didn't catch the {' or '.join(missed)}.)" if missed else ""
     notes += " (Stock stays the same: it was counted or ran out after that date.)" if already_counted else ""
-    compared = f" {price_verdict(verdict, item['base_unit'])}" if verdict else ""
+    notes += f" (I don't track {untracked} prices yet, so the price isn't recorded.)" if untracked else ""
+    code = pricing.event_currency(event)
+    compared = [
+        price_verdict(verdict, item["base_unit"], code) if verdict else "",
+        home_line(in_home, item["base_unit"]) if in_home else "",
+        rate_line(event) if event.get("total_price") and event["action"] in pricing.PRICED_ACTIONS else "",
+    ]
+    compared = "".join(f" {part}" for part in compared if part)
     return f"{tick}{text}.{compared}{notes}"
 
 
@@ -135,9 +149,10 @@ def summary(item, event) -> str:
     """describe without the item's name. The total is always stated in the item's base unit."""
     unit = item["base_unit"]
     amount = _amount(event, item)
-    price = money(event["total_price"]) if event.get("total_price") else ""
+    code = pricing.event_currency(event)
+    price = money(event["total_price"], code) + _in_home(event) if event.get("total_price") else ""
     store = f" at {event['store']}" if event.get("store") else ""
-    per_unit = unit_price(event["unit_price"], unit) if event.get("unit_price") else ""
+    per_unit = unit_price(event["unit_price"], unit, code) if event.get("unit_price") else ""
     action = event["action"]
     dated = _dated(event)
     if action == "bought":
@@ -161,6 +176,50 @@ def summary(item, event) -> str:
     if action == "finished":
         return f"{named}marked finished" + dated
     return "noted, still have plenty" + dated  # still_have
+
+
+def _in_home(event) -> str:
+    """" ($5.70)" after a foreign price: the SGD price as written, or "≈" one at the day's rate."""
+    if event.get("total_price_home") is None or pricing.event_currency(event) == config.home_currency():
+        return ""
+    about = "" if event.get("fx_source") == "written" else "≈ "
+    return f" ({about}{money(event['total_price_home'])})"
+
+
+def home_line(in_home, base_unit) -> str:
+    """A foreign price's base-currency value against the best base-currency price (PLAN.md §8.5)."""
+    home = config.home_currency()
+    value = in_home["unit_price_home"]
+    text = f"In {home}: {unit_price(value, base_unit)}"
+    best = in_home["best"]
+    if best is None:
+        return f"{text}. No {home} price to compare with yet."
+    ratio = value / best["unit_price"]
+    if ratio <= 0.5:
+        how = "less than half"
+    elif ratio < 0.97:
+        how = f"{round((1 - ratio) * 100)}% below"
+    elif ratio <= 1.03:
+        how = "about the same as"
+    elif ratio >= 2:
+        how = "more than twice"
+    else:
+        how = f"{round((ratio - 1) * 100)}% above"
+    return f"{text}, {how} your best {home} price ({_price_at(best, base_unit)})."
+
+
+def rate_line(event) -> str:
+    """Which rate put a foreign price into the base currency, or that none could. "" for a base-currency price."""
+    code = pricing.event_currency(event)
+    if code == config.home_currency():
+        return ""
+    if event.get("fx_to_home") is None:
+        return f"No {code} rate to hand, so this is compared in {code} only."
+    rate = currency.show_rate(code, event["fx_to_home"])
+    source = event.get("fx_source")
+    if source == "written":
+        return f"Rate {rate}, from your two prices."
+    return f"Rate {rate} ({_day(date.fromisoformat(event['fx_date']))})."
 
 
 def _dated(event) -> str:
@@ -240,51 +299,79 @@ def date_problem(on, problem) -> str:
     return f"{on['written']} isn't a date, so that line isn't recorded. {DATE_FORMAT}"
 
 
-def price_verdict(verdict, base_unit) -> str:
-    """The sentence after a priced entry: how its price compares with the earlier ones (PLAN.md §8.2)."""
+def price_verdict(verdict, base_unit, code=None) -> str:
+    """The sentence after a priced entry: how its price compares with the earlier ones in its currency (§8.2, §8.5).
+
+    A foreign price names its currency ("Typical MYR price"), since it is only set against prices in that currency.
+    """
     kind = verdict["kind"]
+    foreign = code not in (None, config.home_currency())
+    named = f" {code}" if foreign else ""
     if kind == pricing.FIRST:
-        return "First price recorded."
-    best = _price_at(verdict["best"], base_unit)
+        return f"First{named} price recorded."
+    best = _price_at(verdict["best"], base_unit, code)
     if kind == pricing.BEST:
         if verdict["price"] < verdict["best"]["unit_price"]:
-            return f"🔥 Best price yet. It was {best}."
-        return f"🔥 As good as your best: {best}."
+            return f"🔥 Best{named} price yet. It was {best}."
+        return f"🔥 As good as your best{named} price: {best}." if foreign else f"🔥 As good as your best: {best}."
+    usual = unit_price(verdict["usual"], base_unit, code) if kind == pricing.ABOVE else ""
     if kind == pricing.GOOD:
-        return f"Good price. Best seen: {best}."
+        return f"Good{named} price. Best seen: {best}."
     if kind == pricing.ABOVE:
-        return f"Above usual (usually {unit_price(verdict['usual'], base_unit)}). Best seen: {best}."
-    return f"Typical price. Best seen: {best}."
+        return f"Above usual{f' for {code}' if foreign else ''} (usually {usual}). Best seen: {best}."
+    return f"Typical{named} price. Best seen: {best}."
 
 
-def price_book(item, points, other_currencies=()) -> str:
-    """The /price reply. points is pricing.price_points; other_currencies aren't compared with them."""
+def price_book(item, by_currency, cheapest=None) -> str:
+    """The /price reply. by_currency is [(currency, pricing.price_points in it)], the base currency first.
+
+    Each currency is listed on its own, since prices are only compared within
+    one. cheapest is pricing.cheapest_anywhere, shown when a foreign price has a
+    base-currency value to compare by.
+    """
     unit = item["base_unit"]
-    if points:
+    home = config.home_currency()
+    by_currency = [(code, points) for code, points in by_currency if points]
+    if not by_currency:
+        return f"No prices for {item['name']} in the last 12 months."
+    lines = [f"{item['name']}: prices over the last 12 months"]
+    if by_currency[0][0] != home:
+        lines.append(f"No {home} prices.")
+    for code, points in by_currency:
+        if code != home:
+            lines.append(f"In {code}:")
         best = pricing.best_point(points)
-        lines = [f"{item['name']}: prices over the last 12 months",
-                 f"Best: {_price_at(best, unit)}, {_day(best['day'])}"]
+        lines.append(f"Best: {_price_at(best, unit, code)}, {_day(best['day'])}{_home_value(best, unit, code)}")
         if len(points) > 1:
-            lines.append(f"Usual: {unit_price(pricing.usual_price(points), unit)}")
+            lines.append(f"Usual: {unit_price(pricing.usual_price(points), unit, code)}")
         lines.append("Latest:")
-        lines += [_price_line(point, unit) for point in reversed(points[-LATEST_PRICES:])]
-    else:
-        lines = [f"No prices for {item['name']} in the last 12 months."]
-    if other_currencies:
-        lines.append(f"Also logged in {', '.join(other_currencies)}. I don't compare those yet.")
+        lines += [_price_line(point, unit, code) for point in reversed(points[-LATEST_PRICES:])]
+    foreign_values = [point["unit_price_home"] for code, points in by_currency if code != home for point in points]
+    if cheapest and any(value is not None for value in foreign_values):
+        code = cheapest["currency"]
+        lines.append(f"Cheapest anywhere, in {home}: {_price_at(cheapest, unit, code)}, {_day(cheapest['day'])}"
+                     f"{_home_value(cheapest, unit, code)}")
     return "\n".join(lines)
 
 
-def _price_line(point, base_unit) -> str:
+def _price_line(point, base_unit, code=None) -> str:
     """One line of /price: "• 9 Oct: $0.15/piece at Taobao, paid, logged twice"."""
     count = point["entries"]
     logged = "" if count == 1 else ", logged twice" if count == 2 else f", logged {count} times"
-    return f"• {_day(point['day'])}: {_price_at(point, base_unit)}, {'paid' if point['paid'] else 'seen'}{logged}"
+    paid = "paid" if point["paid"] else "seen"
+    return f"• {_day(point['day'])}: {_price_at(point, base_unit, code)}{_home_value(point, base_unit, code)}, {paid}{logged}"
 
 
-def _price_at(point, base_unit) -> str:
+def _home_value(point, base_unit, code) -> str:
+    """" (≈ $0.10/100 g)" after a foreign price with a base-currency value; "" otherwise."""
+    if code in (None, config.home_currency()) or point.get("unit_price_home") is None:
+        return ""
+    return f" (≈ {unit_price(point['unit_price_home'], base_unit)})"
+
+
+def _price_at(point, base_unit, code=None) -> str:
     store = f" at {point['store']}" if point["store"] else ""
-    return unit_price(point["unit_price"], base_unit) + store
+    return unit_price(point["unit_price"], base_unit, code) + store
 
 
 def _day(day) -> str:
@@ -327,8 +414,10 @@ def count_unread(item, entry, read_from=None) -> str:
 
 
 def _resend(entry, amount) -> str:
-    """The sender's line in the format with the amount filled in, keeping the brand, price and store."""
-    price = f" {money(entry['total_price'])}" if entry.get("total_price") else ""
+    """The sender's line in the format with the amount filled in, keeping the brand, prices and store."""
+    price = f" {money(entry['total_price'], entry.get('currency'))}" if entry.get("total_price") else ""
+    if entry.get("total_price") and entry.get("total_price_home"):
+        price += f" ({money(entry['total_price_home'])})"
     store = f" @{entry['store']}" if entry.get("store") else ""
     named = " ".join(filter(None, [entry.get("brand"), entry["phrase"]])).lower()
     on = f" on {entry['on']['written']}" if entry.get("on") else ""  # or it would be logged as today
@@ -577,8 +666,9 @@ def _stock(item) -> str:
     return f"{amount} ({_packs(item['stock_est'] / pack_size)})" if pack_size else amount
 
 
-def money(value) -> str:
-    return f"${value:.2f}"
+def money(value, code=None) -> str:
+    """An amount with its currency's sign: "$12.90", "RM18.00". No currency means the base currency."""
+    return currency.show(value, code)
 
 
 def quantity(amount, base_unit) -> str:
@@ -589,14 +679,14 @@ def quantity(amount, base_unit) -> str:
     return f"{_number(amount)} {base_unit if amount == 1 else _COUNT_UNITS[base_unit]}"
 
 
-def unit_price(value, base_unit) -> str:
-    """Per roll/piece/sheet, or per 100 g / 100 ml (PLAN.md §8.2)."""
+def unit_price(value, base_unit, code=None) -> str:
+    """Per roll/piece/sheet, or per 100 g / 100 ml (PLAN.md §8.2), with the currency's sign."""
     if base_unit in ("g", "ml"):
         value, label = value * 100, f"100 {base_unit}"
     else:
         label = base_unit
     digits = 2 if value >= 0.095 else 3
-    return f"${value:.{digits}f}/{label}"
+    return f"{currency.sign(code)}{value:.{digits}f}/{label}"
 
 
 def _amount(event, item) -> str:
@@ -623,3 +713,18 @@ def _number(value) -> str:
 
 def _join(*parts) -> str:
     return "".join(f" {part}" for part in parts if part)
+
+
+# --- Currencies (PLAN.md §8.5) --------------------------------------------------
+
+def untracked_currency(code) -> str:
+    """For a line in the format priced in a currency the bot doesn't track."""
+    return f"I don't track {code} prices yet, so that line isn't recorded. Prices can be in {_currency_examples()}."
+
+
+def _currency_examples() -> str:
+    """"SGD ($12.90), MYR (RM12.90), USD (US$12.90) or CNY (¥12.90)": the base currency first."""
+    home = config.home_currency()
+    codes = [home] + [code for code in currency.CURRENCIES if code != home]
+    named = [f"{code} ({money(12.90, code)})" for code in codes]
+    return ", ".join(named[:-1]) + " or " + named[-1]

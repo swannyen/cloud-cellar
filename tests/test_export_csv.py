@@ -95,6 +95,21 @@ class ExportCsvTest(unittest.TestCase):
         self.assertEqual((aesop["adds"], aesop["logged_at"], aesop["total_price"]), ("", "", ""))
         self.assertEqual((masks["item"], masks["unit"], masks["quantity"], masks["who"]), ("", "", "", ""))
 
+    def test_a_foreign_price_keeps_its_sgd_value_and_rate(self):
+        store.put_event("toilet-paper", "2026-11-13T02:00:00Z#130#0", {
+            "action": "bought", "qty": 20, "total_price": 18.0, "unit_price": 0.9, "currency": "MYR",
+            "home_currency": "SGD", "fx_to_home": 0.316667, "fx_date": "2026-11-13", "fx_source": "written",
+            "total_price_home": 5.7, "unit_price_home": 0.285, "user_id": 7, "user_name": "Ben",
+            "raw_text": "+ toilet paper 2x10 RM18 ($5.70)", "at": "2026-11-13T02:00:00Z"})
+        self.export()
+        foreign = self.csv_rows()[-1]
+        self.assertEqual({key: foreign[key] for key in ("total_price", "currency", "home_currency", "total_price_home",
+                                                        "unit_price_home", "fx_to_home", "fx_date", "fx_source")},
+                         {"total_price": "18", "currency": "MYR", "home_currency": "SGD", "total_price_home": "5.7",
+                          "unit_price_home": "0.285", "fx_to_home": "0.316667", "fx_date": "2026-11-13",
+                          "fx_source": "written"})
+        self.assertEqual(self.csv_rows()[0]["fx_source"], "")   # an SGD price has no rate
+
     def test_json_holds_every_record_and_can_be_put_back_as_it_was(self):
         result = self.export()
         saved = self.json_file()

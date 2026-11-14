@@ -64,6 +64,12 @@ COLUMNS = (
     ("total_price", "total_price"),
     ("unit_price", "unit_price"),
     ("currency", "currency"),   # empty on the first entries: read as SGD
+    ("home_currency", "home_currency"),        # the base currency it was logged under; empty before 13 Nov 2026: SGD
+    ("total_price_home", "total_price_home"),  # a foreign price in the base currency, as written or at the day's rate
+    ("unit_price_home", "unit_price_home"),
+    ("fx_to_home", "fx_to_home"),              # base-currency units for 1 unit of the currency
+    ("fx_date", "fx_date"),
+    ("fx_source", "fx_source"),                # written, manual or frankfurter
     ("store", "store"),
     ("brand", "brand"),
     ("description", "description"),

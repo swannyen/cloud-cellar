@@ -25,7 +25,15 @@ The design and the phase-by-phase build plan are in [PLAN.md](PLAN.md).
 - answers `/listitems` (what's in the cellar and how much), `/list <item>` (one item: how much is left, and an estimate of which brands that is, taking the oldest purchase to be used first), `/items` (the same items with their IDs), `/undo` (repeat it to step back through the last 24 hours), `/alias`, `/rename <item> = <new name>`, `/set <item> pack <n>`, `/unit <word> = <unit word>`, `/brand <name>`, `/listbrands`, `/stats`, `/help` and `/ping`,
 - takes back what it was taught with `/forget alias|brand|unit|store <name>`. Entries are never removed by it; forgetting a brand also takes that brand off the entries that carry it, since the bot knows brands from those too,
 - takes the date of an old receipt on any entry line, always day first: `+ rice 5kg $12 @ntuc on 15/09/2026`. The reply spells the date out, and a date to come or one it can't read records nothing and shows the format,
-- says how each price compares with earlier ones (first, best, good, typical or above usual), on `+` and `?` lines alike, and answers `/price <item>` with the best, usual and latest prices. Prices are SGD unless an entry says otherwise. Every entry is a true log and counts towards stock, but repeats of one price on one day count as one price.
+- says how each price compares with earlier ones (first, best, good, typical or above usual), on `+` and `?` lines alike, and answers `/price <item>` with the best, usual and latest prices. Every entry is a true log and counts towards stock, but repeats of one price on one day count as one price.
+
+**Phase 4, prices in other currencies, is deployed (14 Nov 2026)** (moved ahead of the daily message on 13 Nov 2026):
+
+- a price can be in SGD (`$12.90`, or a plain `12.90`), MYR (`RM12.90`), USD (`US$12.90`) or CNY (`¥12.90`, `12.90 yuan`). Each entry keeps the price in the currency it was paid in, and the base currency (SGD) it was logged under,
+- a foreign price can come with what it cost in SGD (`+ rice 5kg RM18 5.70 @lotus`, or `($5.70)`: the `$` is optional, as long as the SGD price has its cents). That SGD price is used as written. Otherwise the bot looks up the day's rate from Frankfurter when the entry is recorded, and only then: nothing fetches rates on a schedule. With no rate to be had, the entry is still recorded and compared in its own currency only,
+- a foreign price is judged against earlier prices in its own currency, then set against the best SGD price ("In SGD: $0.11/100 g, less than half your best SGD price"), and the reply says which rate was used,
+- `/price` lists each currency on its own, with SGD values, and the cheapest price anywhere. There is no command to see or set rates: to use the rate the card or money changer charged, write the SGD price beside the foreign one,
+- a price in a currency that isn't tracked (`JPY500`, `€4.50`) records nothing on a format line, and the reply says so. Adding a currency is a row in the `CURRENCIES` table in `src/currency.py`.
 
 Set `FREE_TEXT_AI` to `"off"` in [template.yaml](template.yaml) to stop the free-text calls: those lines then get a hint about the format instead. `/stats` shows how many lines needed AI this month.
 

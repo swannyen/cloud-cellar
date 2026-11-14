@@ -9,6 +9,8 @@ import calendar
 import re
 from datetime import date, timedelta
 
+import currency
+
 MAX_PACKS = 1000  # more than this in one entry is taken for a typo (a phone number, a price without its $)
 MAX_STORE_LENGTH = 40
 
@@ -81,6 +83,8 @@ BAD_DATE = "bad_date"
 FUTURE_DATE = "future_date"
 # What parse_line returns for a /bought line with no price.
 NO_PRICE = "no_price"
+# What parse_line returns for a line priced in a currency that isn't tracked ("JPY500"): see currency.untracked_in.
+UNTRACKED_CURRENCY = "untracked_currency"
 # What parse_line returns for an expiry word with no date it can read after it, and
 # what resolve_expiry returns for a date that doesn't exist.
 BAD_EXPIRY = "bad_expiry"
@@ -89,8 +93,6 @@ EXPIRED_WINDOW_DAYS = 14   # a date with no year that fell this recently is take
 _NUMBER = r"\d+(?:\.\d+)?"
 _TIMES = re.compile(r"(\d)\s*[x×*]\s*(?=\d)", re.IGNORECASE)  # "2 x 10", "2×10", "2*10"
 _SIZE_TIMES = re.compile(rf"({_NUMBER}[^\W\d_]+)\s*[x×*]\s*(\d+)(?![\w.])", re.IGNORECASE)  # "500ml x2"
-_SPACED_PRICE = re.compile(r"\$\s+(?=\d)")                     # "$ 12"
-_PRICE = re.compile(rf"\$({_NUMBER})")
 _PACKS_SIZE = re.compile(rf"({_NUMBER})x({_NUMBER})([^\W\d_]+)?", re.IGNORECASE)
 _NUMBER_WORD = re.compile(rf"({_NUMBER})([^\W\d_]+)")
 _BARE = re.compile(_NUMBER)
@@ -146,10 +148,15 @@ def parse_line(line, stores=(), units=None):
 
     stores are the saved STORE records and units the taught unit words
     ({word: unit word}). Returns the entry as a dict (action, phrase, quantity,
-    total_price, store, store_is_new, on, expiry, raw, explicit), UNREADABLE for a line
-    that starts with a keyword but can't be read, BAD_DATE for one with a date
-    that isn't in the format, BAD_EXPIRY for an expiry word with no date it can
-    read, NO_PRICE for a /bought line without its price, or None for a line that doesn't start with a keyword. A None in an entry means "not given".
+    total_price, currency, total_price_home, store, store_is_new, on, expiry, raw,
+    explicit), UNREADABLE for a line that starts with a keyword but can't be read,
+    BAD_DATE for one with a date that isn't in the format, BAD_EXPIRY for an expiry
+    word with no date it can read, NO_PRICE for a /bought line without its price,
+    UNTRACKED_CURRENCY for a price in a currency that isn't tracked, or None for a
+    line that doesn't start with a keyword. A None in an entry means "not given".
+
+    total_price is in `currency`. A foreign price written with its price in the base
+    currency beside it ("RM18 ($5.70)") also has that as total_price_home (PLAN.md §8.5).
     """
     raw = " ".join(line.split())
     action, rest = _keyword(raw)
@@ -157,6 +164,7 @@ def parse_line(line, stores=(), units=None):
     # A keyword with nothing after it ("done", "??") is ordinary chat, not an attempt.
     if action is None or not _READABLE.search(rest):
         return None
+    rest = currency.join_markers(rest)   # "RM 18", "25.80 yuan": one word each, so a store after them is seen
     rest, expiry = split_expiry(rest)
     if expiry == BAD_EXPIRY:
         return BAD_EXPIRY
@@ -165,6 +173,8 @@ def parse_line(line, stores=(), units=None):
     if on == BAD_DATE:
         return BAD_DATE
     rest, store, store_is_new = _split_store(rest, store_names(stores))
+    if action not in NO_QUANTITY and currency.untracked_in(rest):
+        return UNTRACKED_CURRENCY
     if action in NO_QUANTITY:
         phrase = " ".join(rest.split())
         if not _READABLE.search(phrase):
@@ -175,7 +185,9 @@ def parse_line(line, stores=(), units=None):
         return UNREADABLE
     prices, quantities, words = reading
     phrase = " ".join(words)
-    price = prices[0] if prices else None
+    price = _price(prices)
+    if price == UNREADABLE:
+        return UNREADABLE
     quantity = quantities[0] if quantities else None
     if not _READABLE.search(phrase):
         return UNREADABLE
@@ -468,7 +480,8 @@ def store_names(stores=()) -> dict:
 
 def find_store(line, stores=()):
     """The store a line names with "@" or with from/at + a known store: (name, is new), or (None, False)."""
-    return _split_store(split_date(split_expiry(" ".join(line.split()))[0])[0], store_names(stores))[1:]
+    text = currency.join_markers(" ".join(line.split()))
+    return _split_store(split_date(split_expiry(text)[0])[0], store_names(stores))[1:]
 
 
 def title_store(typed) -> str:
@@ -488,12 +501,15 @@ def numbers_in(text) -> list:
 
 def _entry(action, phrase, raw, quantity=None, price=None, store=None, store_is_new=False, explicit=False,
            on=None, expiry=None) -> dict:
+    """price is what _price read: {"total_price", "currency", "total_price_home"}, or None."""
     return {
         "explicit": explicit,
         "action": action,
         "phrase": phrase,
         "quantity": quantity,
-        "total_price": price,
+        "total_price": price["total_price"] if price else None,
+        "currency": price["currency"] if price else None,
+        "total_price_home": price["total_price_home"] if price else None,
         "store": store,
         "store_is_new": store_is_new,
         "on": on,
@@ -548,12 +564,14 @@ def _is_amount(token) -> bool:
 def _read(text, units, loose=False):
     """Sort the words of a line into (prices, quantities, item words).
 
-    Returns None for more than one price or quantity, or a number that can't be
-    right (zero, or more packs than MAX_PACKS). With loose (free text), a pack
-    count plus a size marked "each" also reads as packs x size, and a bare
-    number is marked as one.
+    A price is {"amount", "currency"}. A bare number with two decimals is a
+    price in the base currency. Returns None for
+    more than two prices or more than one quantity, a price inside a word, or a
+    number that can't be right (zero, or more packs than MAX_PACKS). With loose
+    (free text), a pack count plus a size marked "each" also reads as packs x
+    size, a bare number is marked as one, and prices don't matter.
     """
-    text = _SPACED_PRICE.sub("$", _TIMES.sub(r"\1x", _SIZE_TIMES.sub(r"\2x\1", text)))
+    text = currency.separate_prices(_TIMES.sub(r"\1x", _SIZE_TIMES.sub(r"\2x\1", text)))
     tokens = text.split()
     prices, parts = [], []   # parts keeps quantities and words in order, to spot "2 packs of 10 rolls"
     index = 0
@@ -561,8 +579,8 @@ def _read(text, units, loose=False):
         token = tokens[index]
         core = token.strip(",;").rstrip(".")
         following = unit_word(tokens[index + 1].strip(",;."), units) if index + 1 < len(tokens) else None
-        if match := _PRICE.fullmatch(core):
-            prices.append(_number(match[1]))
+        if money := currency.read_price(core):
+            prices.append({"amount": _number(money[0]), "currency": money[1]})
         elif match := _PACKS_SIZE.fullmatch(core):
             unit = unit_word(match[3], units) if match[3] else None
             if match[3] is None and following and following[0] != PACK:
@@ -577,11 +595,13 @@ def _read(text, units, loose=False):
             parts.append(_counted(core, following))                           # "5 pcs", "2 boxes"
             index += 1
         elif _TWO_DECIMALS.fullmatch(core):
-            prices.append(_number(core))                                      # "1.86"
+            prices.append({"amount": _number(core), "currency": currency.home()})   # "1.86"
         elif _BARE.fullmatch(core):
             parts.append(_bare(core, marked=loose))                           # a bare "2"
         elif core.lower() == "for" and index + 1 < len(tokens) and _is_price(tokens[index + 1]):
             pass                                                              # "... for $1.96": not an item word
+        elif currency.has_price(core) and not loose:
+            return None   # "(U.P. $6.40)", "$5.70each": a price that isn't a word of its own can't be told apart
         else:
             parts.append(token)
         index += 1
@@ -593,7 +613,7 @@ def _read(text, units, loose=False):
         if isinstance(part, str)
         and not (part.lower() == "of" and position and isinstance(parts[position - 1], dict))
     ]
-    if len(quantities) > 1 or 0 in prices or (len(prices) > 1 and not loose):
+    if len(quantities) > 1 or any(price["amount"] == 0 for price in prices) or (len(prices) > 2 and not loose):
         return None
     for quantity in quantities:
         if 0 in (quantity.get("packs"), quantity.get("size"), quantity.get("amount")):
@@ -605,7 +625,27 @@ def _read(text, units, loose=False):
 
 def _is_price(token) -> bool:
     core = token.strip(",;").rstrip(".")
-    return bool(_PRICE.fullmatch(core) or _TWO_DECIMALS.fullmatch(core))
+    return bool(currency.read_price(core) or _TWO_DECIMALS.fullmatch(core))
+
+
+def _price(prices):
+    """The line's price, from what _read found: {"total_price", "currency", "total_price_home"}, None, or UNREADABLE.
+
+    One price is the price, in whichever currency. Two are a foreign price and
+    what it cost in the base currency: "RM18 ($5.70)", or "RM18 5.70", since a
+    bare number with two decimals is a base-currency price here as everywhere.
+    """
+    if not prices:
+        return None
+    if len(prices) == 1:
+        return {"total_price": prices[0]["amount"], "currency": prices[0]["currency"], "total_price_home": None}
+    home = currency.home()
+    foreign = [price for price in prices if price["currency"] != home]
+    based = [price for price in prices if price["currency"] == home]
+    if len(prices) == 2 and len(foreign) == 1 and len(based) == 1:
+        return {"total_price": foreign[0]["amount"], "currency": foreign[0]["currency"],
+                "total_price_home": based[0]["amount"]}
+    return UNREADABLE
 
 
 def _join_packs_of(parts, units, loose):

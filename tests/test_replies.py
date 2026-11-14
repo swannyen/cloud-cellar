@@ -433,5 +433,69 @@ class PriceVerdictReplyTest(unittest.TestCase):
                          "Above usual (usually $0.25/100 g). Best seen: $0.24/100 g at FairPrice.")
 
 
+class CurrencyReplyTest(unittest.TestCase):
+    """Prices in other currencies (PLAN.md §8.5)."""
+
+    BEST_MYR = {"unit_price": 0.0033, "store": "Lotus's"}
+    BEST_SGD = {"unit_price": 0.0024, "store": "FairPrice"}
+
+    def test_a_foreign_verdict_names_its_currency(self):
+        def verdict(kind, price=0.0036):
+            return replies.price_verdict({"kind": kind, "price": price, "best": self.BEST_MYR, "usual": 0.0035}, "g", "MYR")
+        self.assertEqual(replies.price_verdict({"kind": pricing.FIRST, "price": 0.0036}, "g", "MYR"),
+                         "First MYR price recorded.")
+        self.assertEqual(verdict(pricing.BEST, 0.003), "🔥 Best MYR price yet. It was RM0.33/100 g at Lotus's.")
+        self.assertEqual(verdict(pricing.BEST, 0.0033), "🔥 As good as your best MYR price: RM0.33/100 g at Lotus's.")
+        self.assertEqual(verdict(pricing.GOOD), "Good MYR price. Best seen: RM0.33/100 g at Lotus's.")
+        self.assertEqual(verdict(pricing.ABOVE),
+                         "Above usual for MYR (usually RM0.35/100 g). Best seen: RM0.33/100 g at Lotus's.")
+        self.assertEqual(verdict(pricing.TYPICAL), "Typical MYR price. Best seen: RM0.33/100 g at Lotus's.")
+
+    def test_the_sgd_line(self):
+        def line(value):
+            return replies.home_line({"unit_price_home": value, "best": self.BEST_SGD}, "g")
+        self.assertEqual(line(0.001), "In SGD: $0.10/100 g, less than half your best SGD price ($0.24/100 g at FairPrice).")
+        self.assertEqual(line(0.0018), "In SGD: $0.18/100 g, 25% below your best SGD price ($0.24/100 g at FairPrice).")
+        self.assertEqual(line(0.00245), "In SGD: $0.24/100 g, about the same as your best SGD price ($0.24/100 g at FairPrice).")
+        self.assertEqual(line(0.0030), "In SGD: $0.30/100 g, 25% above your best SGD price ($0.24/100 g at FairPrice).")
+        self.assertEqual(line(0.006), "In SGD: $0.60/100 g, more than twice your best SGD price ($0.24/100 g at FairPrice).")
+        self.assertEqual(replies.home_line({"unit_price_home": 0.001, "best": None}, "g"),
+                         "In SGD: $0.10/100 g. No SGD price to compare with yet.")
+
+    def test_the_rate_line_says_where_the_rate_came_from(self):
+        event = ev(total_price=18, currency="MYR", fx_to_home=0.31502, fx_date="2026-11-13")
+        self.assertEqual(replies.rate_line({**event, "fx_source": "frankfurter"}), "Rate RM1 = $0.315 (13 Nov).")
+        self.assertEqual(replies.rate_line({**event, "fx_source": "written", "fx_to_home": 0.316667}),
+                         "Rate RM1 = $0.317, from your two prices.")
+        self.assertEqual(replies.rate_line(ev(total_price=18, currency="MYR")),
+                         "No MYR rate to hand, so this is compared in MYR only.")
+        self.assertEqual(replies.rate_line(ev(total_price=18, currency="SGD")), "")
+
+    def test_a_foreign_entry_shows_its_price_and_the_sgd_one(self):
+        event = ev(qty=5000, total_price=18, unit_price=0.0036, currency="MYR", store="Lotus's",
+                   total_price_home=5.67, fx_to_home=0.31502, fx_date="2026-11-13", fx_source="frankfurter")
+        self.assertEqual(replies.summary(RICE, event), "bought 5 kg for RM18.00 (≈ $5.67) at Lotus's (RM0.36/100 g)")
+        written = {**event, "total_price_home": 5.7, "fx_source": "written"}
+        self.assertEqual(replies.summary(RICE, written), "bought 5 kg for RM18.00 ($5.70) at Lotus's (RM0.36/100 g)")
+
+    def test_a_question_keeps_the_currency_when_it_asks_for_the_amount_again(self):
+        entry = {"action": "bought", "phrase": "toilet paper", "quantity": {"kind": "packs", "packs": 2},
+                 "total_price": 18, "currency": "MYR", "total_price_home": 5.7, "store": "Lotus"}
+        question = replies.ask_pack_size({"name": "Toilet paper", "base_unit": "roll"}, entry)
+        self.assertIn("+ toilet paper 2x10rolls RM18.00 ($5.70) @Lotus", question)
+        self.assertEqual(structured.parse_line("+ toilet paper 2x10rolls RM18.00 ($5.70) @Lotus")["total_price_home"], 5.7)
+
+    def test_the_help_shows_the_currencies_and_its_example_parses(self):
+        for text in ("RM12.90", "US$12.90", "¥12.90", "12.90 yuan"):
+            self.assertIn(text, replies.HELP)
+        example = replies.HELP.split("Add what it cost in SGD if you know it: ")[1].split(". Otherwise")[0]
+        self.assertEqual(structured.parse_line(example)["total_price_home"], 5.7)
+
+    def test_an_untracked_currency(self):
+        self.assertEqual(replies.untracked_currency("JPY"),
+                         "I don't track JPY prices yet, so that line isn't recorded. Prices can be in SGD ($12.90), "
+                         "MYR (RM12.90), USD (US$12.90) or CNY (¥12.90).")
+
+
 if __name__ == "__main__":
     unittest.main()

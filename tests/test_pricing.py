@@ -21,7 +21,8 @@ def on_separate_days(*prices):
 class PricePointsTest(unittest.TestCase):
     def test_a_point_says_what_was_paid_where_and_when(self):
         self.assertEqual(pricing.price_points([ev(0.65)], NOW), [
-            {"unit_price": 0.65, "day": date(2026, 10, 11), "store": "Taobao", "paid": True, "entries": 1},
+            {"unit_price": 0.65, "unit_price_home": 0.65, "day": date(2026, 10, 11), "store": "Taobao", "paid": True,
+             "entries": 1},
         ])
 
     def test_a_price_seen_counts_but_is_not_called_paid(self):
@@ -114,10 +115,11 @@ class CurrencyTest(unittest.TestCase):
         events = [ev(5.0), ev(1.0, currency="MYR", at="2026-10-12T04:00:00Z")]
         self.assertEqual(pricing.verdict(4.0, pricing.price_points(events, NOW))["best"]["unit_price"], 5.0)
 
-    def test_other_currencies_are_named(self):
-        events = [ev(5.0), ev(1.0, currency="MYR"), ev(2.0, currency="JPY"), ev(3.0, currency="MYR"), ev(None, currency="THB")]
-        self.assertEqual(pricing.other_currencies(events), ["JPY", "MYR"])
-        self.assertEqual(pricing.other_currencies([ev(5.0)]), [])
+    def test_the_currencies_with_prices_come_base_currency_first(self):
+        events = [ev(1.0, currency="MYR"), ev(5.0), ev(2.0, currency="CNY"), ev(3.0, currency="MYR"), ev(None, currency="USD")]
+        self.assertEqual(pricing.currencies(events), ["SGD", "CNY", "MYR"])
+        self.assertEqual(pricing.currencies([ev(1.0, currency="MYR")]), ["MYR"])
+        self.assertEqual(pricing.currencies([ev(5.0)]), ["SGD"])
 
 
 class VerdictTest(unittest.TestCase):
